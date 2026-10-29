@@ -1,0 +1,57 @@
+seed: 42
+model:
+  name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  revision: main
+  trust_remote_code: false
+  # T4 supports fp16; bfloat16 is not supported on this GPU generation.
+  torch_dtype: float16
+  use_lora: true
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+data:
+  name: HuggingFaceH4/ultrafeedback_binarized
+  revision: main
+  train_preferences_split: train_prefs
+  eval_preferences_split: test_prefs
+  sft_split: train_sft
+  validation_fraction: 0.02
+  max_validation_samples: 512
+  max_length: 1024
+  max_train_samples: null
+  max_eval_samples: 200
+training:
+  output_dir: checkpoints/qwen25-05b/sft
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 0.00005
+  weight_decay: 0.0
+  epochs: 1
+  logging_steps: 10
+  save_steps: 100
+  max_grad_norm: 1.0
+  num_workers: 0
+  device: auto
+  resume_from_checkpoint: null
+  gradient_checkpointing: true
+dpo:
+  beta: 0.1
+  sft_checkpoint: checkpoints/qwen25-05b/sft
+  output_dir: checkpoints/qwen25-05b/dpo-beta-0.1
+  reference_logps_path: checkpoints/qwen25-05b/reference_logps.pt
+evaluation:
+  split: validation
+  max_new_tokens: 128
+  batch_size: 2
+  checkpoints:
+    base: null
+    sft: checkpoints/qwen25-05b/sft
+    dpo_beta_0.05: checkpoints/qwen25-05b/dpo-beta-0.05
+    dpo_beta_0.1: checkpoints/qwen25-05b/dpo-beta-0.1
+    dpo_beta_0.5: checkpoints/qwen25-05b/dpo-beta-0.5
+  beta_by_checkpoint:
+    dpo_beta_0.05: 0.05
+    dpo_beta_0.1: 0.1
+    dpo_beta_0.5: 0.5

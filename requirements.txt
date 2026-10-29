@@ -1,0 +1,9 @@
+# Python 3.11 or 3.12. For CUDA, install the matching PyTorch wheel first;
+# this pin describes the tested API/version, not a CUDA wheel index.
+torch==2.5.1
+transformers==4.46.3
+peft==0.13.2
+datasets==3.1.0
+trl==0.12.2
+accelerate==1.1.1
+PyYAML==6.0.2

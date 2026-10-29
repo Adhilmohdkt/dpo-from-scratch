@@ -1,0 +1,43 @@
+seed: 42
+model:
+  name_or_path: sshleifer/tiny-gpt2
+  revision: main
+  trust_remote_code: false
+  torch_dtype: float32
+  use_lora: true
+  lora:
+    r: 4
+    alpha: 8
+    dropout: 0.0
+    target_modules: [c_attn]
+data:
+  name: HuggingFaceH4/ultrafeedback_binarized
+  train_preferences_split: train_prefs
+  eval_preferences_split: test_prefs
+  sft_split: train_sft
+  validation_fraction: 0.2
+  max_validation_samples: 4
+  max_length: 256
+  max_train_samples: 16
+  max_eval_samples: 8
+training:
+  output_dir: checkpoints/tiny/sft
+  batch_size: 2
+  gradient_accumulation_steps: 1
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  epochs: 1
+  logging_steps: 1
+  save_steps: 10
+  max_grad_norm: 1.0
+  num_workers: 0
+  device: cpu
+  resume_from_checkpoint: null
+dpo:
+  beta: 0.1
+  sft_checkpoint: checkpoints/tiny/sft
+  output_dir: checkpoints/tiny/dpo-beta-0.1
+  reference_logps_path: checkpoints/tiny/reference_logps.pt
+evaluation:
+  max_new_tokens: 64
+  batch_size: 4
