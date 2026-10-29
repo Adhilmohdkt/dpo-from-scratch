@@ -21,6 +21,7 @@ data:
   max_validation_samples: 512
   max_length: 1024
   max_train_samples: null
+  train_row_ids_file: null
   max_eval_samples: 200
 training:
   output_dir: checkpoints/qwen25-05b/sft

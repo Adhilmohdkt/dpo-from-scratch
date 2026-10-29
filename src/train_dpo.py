@@ -69,6 +69,7 @@ def build_reference_cache_metadata(cfg: dict, sft_path: Path, train_dataset, tok
         "dataset": data_cfg["name"],
         "dataset_revision": data_cfg.get("revision", "main"),
         "dataset_fingerprint": getattr(train_dataset.rows, "_fingerprint", None),
+        "train_row_ids_sha256": hashlib.sha256(Path(data_cfg["train_row_ids_file"]).read_bytes()).hexdigest() if data_cfg.get("train_row_ids_file") else None,
         "split": data_cfg.get("train_preferences_split", "train_prefs"),
         "rows": len(train_dataset),
         "max_train_samples": data_cfg.get("max_train_samples"),
@@ -87,12 +88,18 @@ def build_reference_cache_metadata(cfg: dict, sft_path: Path, train_dataset, tok
     }
 
 
-def train(config_path: str, sft_checkpoint: str | None = None, resume: str | None = None, force_reference: bool = False, beta_override: float | None = None):
+def train(config_path: str, sft_checkpoint: str | None = None, resume: str | None = None, force_reference: bool = False, beta_override: float | None = None, train_row_ids_file: str | None = None, output_dir: str | None = None, reference_logps_path: str | None = None):
     cfg = load_config(config_path)
     set_seed(int(cfg.get("seed", 42)))
     device = resolve_device(cfg["training"].get("device", "auto"))
     if not cfg["model"].get("use_lora", False):
         raise ValueError("Current DPO trainer expects a saved LoRA SFT checkpoint")
+    if train_row_ids_file:
+        cfg["data"]["train_row_ids_file"] = train_row_ids_file
+    if output_dir:
+        cfg["dpo"]["output_dir"] = output_dir
+    if reference_logps_path:
+        cfg["dpo"]["reference_logps_path"] = reference_logps_path
     sft_path = Path(sft_checkpoint or cfg["dpo"].get("sft_checkpoint", cfg["training"]["output_dir"]))
     if not (sft_path / "adapter_config.json").exists():
         raise FileNotFoundError(f"Expected the saved SFT LoRA adapter at {sft_path}")
@@ -132,9 +139,11 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
     beta = float(beta_override if beta_override is not None else cfg["dpo"]["beta"])
     run_metadata = checkpoint_metadata(cfg, "dpo")
     run_metadata["effective_beta"] = beta
+    if cfg["data"].get("train_row_ids_file"):
+        run_metadata["train_row_ids_sha256"] = hashlib.sha256(Path(cfg["data"]["train_row_ids_file"]).read_bytes()).hexdigest()
     out = Path(cfg["dpo"].get("output_dir", str(Path(cfg["training"]["output_dir"]) / "dpo")))
     configured_beta = float(cfg["dpo"]["beta"])
-    if beta_override is not None and beta != configured_beta:
+    if beta_override is not None and beta != configured_beta and output_dir is None:
         out = Path(cfg["training"]["output_dir"]).parent / f"dpo-beta-{beta:g}"
     resume = resume or cfg["training"].get("resume_from_checkpoint")
     policy = load_sft_policy(cfg["model"], str(resume or sft_path), trainable=True, gradient_checkpointing=cfg["training"].get("gradient_checkpointing", False)).to(device)
@@ -191,5 +200,8 @@ if __name__ == "__main__":
     parser.add_argument("--resume", default=None)
     parser.add_argument("--force-reference-recompute", action="store_true")
     parser.add_argument("--beta", type=float, default=None)
+    parser.add_argument("--train-row-ids-file", default=None, help="Optional train-only selection manifest created by scripts/select_preference_data.py")
+    parser.add_argument("--output-dir", default=None, help="Override this DPO run's output directory")
+    parser.add_argument("--reference-logps-path", default=None, help="Override this run's reference-logprob cache path")
     args = parser.parse_args()
-    train(args.config, args.sft_checkpoint, args.resume, args.force_reference_recompute, args.beta)
+    train(args.config, args.sft_checkpoint, args.resume, args.force_reference_recompute, args.beta, args.train_row_ids_file, args.output_dir, args.reference_logps_path)

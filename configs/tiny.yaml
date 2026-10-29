@@ -19,6 +19,7 @@ data:
   max_validation_samples: 4
   max_length: 256
   max_train_samples: 16
+  train_row_ids_file: null
   max_eval_samples: 8
 training:
   output_dir: checkpoints/tiny/sft

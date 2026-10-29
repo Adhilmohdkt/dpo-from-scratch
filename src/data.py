@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 from typing import Any, Sequence
 
 import torch
@@ -10,6 +12,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 
 PREPROCESSING_VERSION = "chat-template-last-assistant-eos-mask-v2"
+SOURCE_ROW_ID = "_source_row_id"
 
 
 def _messages(value: Any) -> list[dict[str, str]]:
@@ -80,6 +83,7 @@ class PreferenceDataset(Dataset):
         rejected, rejected_mask = _encode_conversation(self.tokenizer, _messages(row["rejected"]), self.max_length)
         return {
             "index": index,
+            "row_id": int(row.get(SOURCE_ROW_ID, index)),
             "chosen_input_ids": chosen,
             "chosen_response_mask": chosen_mask,
             "rejected_input_ids": rejected,
@@ -148,16 +152,65 @@ def _require_columns(dataset, required: set[str], split_name: str):
         raise ValueError(f"Split {split_name!r} is missing required columns: {sorted(missing)}")
 
 
-def load_preference_data(cfg: dict, tokenizer):
+def load_preference_training_rows(cfg: dict):
+    """Return capped train/validation rows and the raw dataset fingerprint."""
     name = cfg["name"]
     kwargs = {"revision": cfg["revision"]} if cfg.get("revision") else {}
     split_name = cfg.get("train_preferences_split", "train_prefs")
     rows = load_dataset(name, split=split_name, **kwargs)
     _require_columns(rows, {"chosen", "rejected", "prompt_id"}, split_name)
+    fingerprint = getattr(rows, "_fingerprint", None)
+    if SOURCE_ROW_ID in rows.column_names:
+        raise ValueError(f"Dataset already contains reserved column {SOURCE_ROW_ID}")
+    rows = rows.add_column(SOURCE_ROW_ID, list(range(len(rows))))
     seed = int(cfg.get("seed", 42))
     train, valid = split_train_validation(rows, float(cfg.get("validation_fraction", 0.02)), seed)
     train = _slice_rows(train, cfg.get("max_train_samples"), seed)
     valid = _slice_rows(valid, cfg.get("max_validation_samples"), seed + 1)
+    return train, valid, fingerprint
+
+
+def _apply_train_row_ids(train, valid, cfg: dict, fingerprint: str | None):
+    selection_path = cfg.get("train_row_ids_file")
+    if not selection_path:
+        return train
+    payload = json.loads(Path(selection_path).read_text(encoding="utf-8"))
+    expected = {
+        "dataset": cfg["name"],
+        "dataset_revision": cfg.get("revision", "main"),
+        "split": cfg.get("train_preferences_split", "train_prefs"),
+        "dataset_fingerprint": fingerprint,
+        "seed": int(cfg.get("seed", 42)),
+        "validation_fraction": float(cfg.get("validation_fraction", 0.02)),
+        "max_train_samples": cfg.get("max_train_samples"),
+    }
+    for key, value in expected.items():
+        if payload.get(key) != value:
+            raise ValueError(f"Selection manifest {key} does not match the current preference dataset")
+    ids = payload.get("row_ids")
+    if not isinstance(ids, list) or not ids or len(ids) != len(set(ids)):
+        raise ValueError("Selection manifest must contain a non-empty list of unique row_ids")
+    if payload.get("candidate_count") != len(train) or payload.get("validation_count") != len(valid):
+        raise ValueError("Selection manifest candidate/validation sizes differ from the current data configuration")
+    if payload.get("subset_size") != len(ids):
+        raise ValueError("Selection manifest subset_size does not match its row_ids")
+    train_ids = set(int(value) for value in train[SOURCE_ROW_ID])
+    valid_ids = set(int(value) for value in valid[SOURCE_ROW_ID])
+    requested = set(int(value) for value in ids)
+    leaked = requested & valid_ids
+    if leaked:
+        raise ValueError("Selection manifest contains validation row IDs")
+    unavailable = requested - train_ids
+    if unavailable:
+        raise ValueError("Selection manifest contains IDs outside the current training candidate pool")
+    # Preserve the normal deterministic train order for equivalent subsets.
+    selected_indices = [i for i, row_id in enumerate(train[SOURCE_ROW_ID]) if int(row_id) in requested]
+    return train.select(selected_indices)
+
+
+def load_preference_data(cfg: dict, tokenizer):
+    train, valid, fingerprint = load_preference_training_rows(cfg)
+    train = _apply_train_row_ids(train, valid, cfg, fingerprint)
     max_len = int(cfg.get("max_length", 1024))
     return PreferenceDataset(train, tokenizer, max_len), PreferenceDataset(valid, tokenizer, max_len)
 

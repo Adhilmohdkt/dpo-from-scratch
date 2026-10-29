@@ -66,6 +66,7 @@ def evaluate_checkpoint(label, path, cfg, tokenizer, dataset, device, output_dir
     margins = scores[:, 0] - scores[:, 1]
     metrics = {
         "checkpoint": label,
+        "seed": int(cfg.get("seed", 42)),
         "preference_accuracy": float((margins > 0).float().mean()),
         "preference_logp_margin_mean": float(margins.mean()),
         "preference_logp_margin_median": float(margins.median()),
@@ -121,7 +122,14 @@ def evaluate_checkpoint(label, path, cfg, tokenizer, dataset, device, output_dir
         "response_length_tokens_mean": float(np.mean(lengths)) if lengths else 0.0,
         "response_length_tokens_median": float(np.median(lengths)) if lengths else 0.0,
         "generation_examples": len(lengths),
+        "generation_max_new_tokens": int(cfg["evaluation"].get("max_new_tokens", 128)),
+        "generation_do_sample": False,
     })
+    with (output_dir / f"{safe_label}_response_lengths.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["index", "prompt_id", "response_tokens_including_eos"])
+        writer.writeheader()
+        for row in predictions:
+            writer.writerow({key: row.get(key) for key in writer.fieldnames})
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -186,9 +194,20 @@ def evaluate(config_path: str, checkpoints: list[str] | None = None, output_dir:
         beta = beta_by_checkpoint.get(label)
         if beta is not None and reference_logps is None:
             raise FileNotFoundError("DPO reward margins need the saved SFT reference adapter")
-        results.append(evaluate_checkpoint(label, path, cfg, tokenizer, dataset, device, output, reference_logps, beta))
+        result = evaluate_checkpoint(label, path, cfg, tokenizer, dataset, device, output, reference_logps, beta)
+        result["split"] = selected_split
+        results.append(result)
     with (output / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
+    (output / "evaluation_config.json").write_text(json.dumps({
+        "seed": int(cfg.get("seed", 42)),
+        "split": selected_split,
+        "max_new_tokens": int(cfg["evaluation"].get("max_new_tokens", 128)),
+        "do_sample": False,
+        "batch_size": int(cfg["evaluation"].get("batch_size", 2)),
+        "checkpoints": {label: (str(path) if path is not None else "base") for label, path in selected.items()},
+        "beta_by_checkpoint": beta_by_checkpoint,
+    }, indent=2), encoding="utf-8")
     if results:
         with (output / "metrics.csv").open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(results[0]))

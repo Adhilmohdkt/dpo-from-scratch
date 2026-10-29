@@ -4,7 +4,7 @@ A research-oriented implementation of supervised fine-tuning (SFT) and Direct Pr
 
 ## Current status
 
-The core SFT/DPO trainers, cache validation, checkpoint resumption, held-out scoring, generation export, and a configurable data interface are implemented. The 16 unit tests pass in the local CPU environment, including a tiny local LoRA/reference-policy update and comparison of the loss to the installed TRL implementation. A complete run on UltraFeedback or Qwen, GPU training, and Colab execution have not been performed. No experiment results are checked in or claimed. Result tables and plots must come from actual runs.
+The SFT/DPO trainers, cache validation, checkpoint resumption, held-out scoring, generation export, train-only subset selection, and result aggregation are implemented. All 21 local CPU unit tests pass. A complete run on UltraFeedback or Qwen, GPU training, and Colab execution have not been performed. No experiment results are checked in or claimed. Result tables must come from actual runs.
 
 ## Setup
 
@@ -35,7 +35,41 @@ python -m src.train_dpo --config configs/default.yaml --beta 0.1
 python -m src.train_dpo --config configs/default.yaml --beta 0.5
 ```
 
-Each beta override writes to `checkpoints/qwen25-05b/dpo-beta-{beta}`. The data-selection experiment is intentionally not implemented in this core phase. `PreferenceDataset` keeps the dataset score fields and stable row indices so a later selector can supply a chosen subset without changing the DPO objective or trainer.
+Each beta override writes to `checkpoints/qwen25-05b/dpo-beta-{beta}`. Each run uses the same configured seed, SFT checkpoint, and data partition. For seed replications, use a separate config/output directory per seed.
+
+## Preference-data selection experiment
+
+The selector uses only the training preference split after its deterministic validation partition and `max_train_samples` cap. It defines the external score margin as `score_chosen - score_rejected`, measured before DPO updates, and selects the top `--subset-size` margins (ties broken by source row ID). A seeded uniform random subset of exactly the same size is also produced; the full arm is the entire configured training candidate pool. UltraFeedback's dataset card describes its chosen response as the highest GPT-4 overall-score completion and rejected as a randomly selected alternative; this experiment uses the exposed scalar `score_chosen` / `score_rejected` fields. It does not use DPO implicit margins, a pilot DPO model, validation, or test rows to select data. This is inspired by [Less is More](https://arxiv.org/abs/2502.14560), not a full reproduction.
+
+Create selection artifacts and train the margin/random arms:
+
+```bash
+python -m scripts.select_preference_data --config configs/default.yaml --subset-size 6000 --output-dir outputs/selection/seed-42
+python -m src.train_dpo --config configs/default.yaml --train-row-ids-file outputs/selection/seed-42/margin_subset.json --output-dir outputs/dpo/seed-42/margin --reference-logps-path outputs/reference/seed-42/margin.pt
+python -m src.train_dpo --config configs/default.yaml --train-row-ids-file outputs/selection/seed-42/random_subset.json --output-dir outputs/dpo/seed-42/random --reference-logps-path outputs/reference/seed-42/random.pt
+python -m src.train_dpo --config configs/default.yaml --output-dir outputs/dpo/seed-42/full --reference-logps-path outputs/reference/seed-42/full.pt
+```
+
+The three DPO runs must use the same saved SFT checkpoint and training settings, but distinct output directories and reference-cache paths as shown. The selector writes both ID manifests, all candidate scores/margins, the complete candidate ID list, seed, source dataset fingerprint, and the training config snapshot. Data loading rejects manifests from another dataset revision/fingerprint and any IDs in validation or outside the configured candidate pool. Set `data.train_row_ids_file` to a manifest in YAML instead of passing the CLI option when preferred.
+
+Compare the three trained arms on validation with one shared generation/evaluation configuration:
+
+```bash
+python -m src.evaluate --config configs/default.yaml --split validation \
+  --checkpoint base=base \
+  --checkpoint sft=checkpoints/qwen25-05b/sft \
+  --checkpoint margin=outputs/dpo/seed-42/margin \
+  --checkpoint random=outputs/dpo/seed-42/random \
+  --checkpoint full=outputs/dpo/seed-42/full \
+  --beta margin=0.1 --beta random=0.1 --beta full=0.1 \
+  --output-dir outputs/selection-evaluation/seed-42
+```
+
+The Colab notebook builds this validation comparison when the selection experiment toggle is enabled.
+
+## Colab
+
+Open [notebooks/colab_run.ipynb](notebooks/colab_run.ipynb). Commit and push local changes before cloning from GitHub. The notebook checks CUDA, installs the pinned CUDA/Python dependencies, mounts Drive, stores checkpoints/reference caches/logs/results there, starts at 128 train examples and 512 tokens, and offers resume variables. Increase the sample cap only after SFT and DPO smoke runs complete. A real T4 run has not been performed.
 
 Resume from a periodic `checkpoint-N` folder (SFT and DPO checkpoints include adapter, optimizer, scheduler, RNG, run metadata, and batch cursor):
 
@@ -51,7 +85,7 @@ Set `training.resume_from_checkpoint` in YAML for SFT resumption. The resume pat
 python -m src.evaluate --config configs/default.yaml
 ```
 
-Evaluation defaults to a validation partition made only from training data. Explicitly select `--split test` for final reporting after model/beta choices are fixed. It scores chosen-vs-rejected response log-probabilities and exports deterministic generations with token-length summaries; generated text is not automatically judged for quality. It writes one prediction JSONL per checkpoint plus `metrics.json` and `metrics.csv`. Configured checkpoint paths include Base, SFT, and each beta output. Missing trained checkpoints must be produced before running the comparison. Final test data is not used by either trainer or validation selection.
+Evaluation defaults to a validation partition made only from training data. Explicitly select `--split test` for final reporting after model/beta choices are fixed. It scores chosen-vs-rejected response log-probabilities and exports deterministic generations with token-length summaries; generated text is not automatically judged for quality. It writes one prediction JSONL and per-example `*_response_lengths.csv` per checkpoint plus `metrics.json` and `metrics.csv`. Generation settings are common to Base/SFT/DPO in one invocation. Length is descriptive, not a quality target. Final test data is not used by either trainer or validation selection.
 
 ## Tests
 
@@ -59,7 +93,15 @@ Evaluation defaults to a validation partition made only from training data. Expl
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the DPO equation (including equivalence with the installed TRL sigmoid loss), prompt masking, EOS inclusion, padding exclusion, identical chosen/rejected responses, reference detachment, SFT adapter identity/freezing, cache invalidation, manifest revision/tokenizer validation, and checkpoint state/resumption. They do not establish full-dataset training performance or GPU compatibility.
+The tests cover the DPO equation (including equivalence with the installed TRL sigmoid loss), prompt masking, EOS inclusion, padding exclusion, identical chosen/rejected responses, reference detachment, SFT adapter identity/freezing, cache invalidation, manifest revision/tokenizer validation, checkpoint state/resumption, equal-size/reproducible data selection, split isolation, and aggregation. They do not establish full-dataset training performance or GPU compatibility.
+
+Aggregate actual evaluations across seeds (each evaluation run must be placed under a separate seed-specific directory):
+
+```bash
+python -m scripts.aggregate_results --root outputs/evaluation --output outputs/summary_metrics.csv
+```
+
+The output contains one row per metric/checkpoint/split/beta, with mean, sample standard deviation (`n-1`; blank for one seed), and seed count. With no runs, there are no result rows to report.
 
 ## Colab T4 checklist
 
