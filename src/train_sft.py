@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import time
 from pathlib import Path
 
 import torch
@@ -11,6 +13,7 @@ from transformers import get_linear_schedule_with_warmup
 from src.config import load_config
 from src.data import collate_sft, load_sft_data
 from src.dpo_loss import sequence_logps
+from src.hub import ensure_hub_repo, push_run_snapshot, resolve_resume_checkpoint
 from src.modeling import (base_model_identity, load_model, load_sft_policy, load_tokenizer,
                           make_sft_manifest, model_config_for_sft_manifest, resolve_device)
 from src.training import append_metrics, checkpoint_metadata, restore_training_state, save_checkpoint, set_seed
@@ -20,7 +23,12 @@ def train(config_path: str):
     cfg = load_config(config_path)
     set_seed(int(cfg.get("seed", 42)))
     device = resolve_device(cfg["training"].get("device", "auto"))
-    resume = cfg["training"].get("resume_from_checkpoint")
+    hub_settings = cfg.get("hub", {})
+    ensure_hub_repo(hub_settings)
+    resume = resolve_resume_checkpoint(cfg["training"].get("resume_from_checkpoint"), hub_settings)
+    out = Path(cfg["training"]["output_dir"])
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "run_config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     if resume:
         from src.modeling import load_sft_manifest, validate_sft_tokenizer
         manifest = load_sft_manifest(resume)
@@ -35,7 +43,8 @@ def train(config_path: str):
         tok = load_tokenizer(cfg["model"]["name_or_path"], cfg["model"].get("trust_remote_code", False), cfg["model"].get("revision"))
         manifest = make_sft_manifest(cfg["model"], tok, model_identity)
     data_cfg = {**cfg["data"], "seed": int(cfg.get("seed", 42))}
-    train_ds, valid_ds = load_sft_data(data_cfg, tok)
+    train_ds, valid_ds, data_identity = load_sft_data(data_cfg, tok, return_identity=True)
+    (out / "dataset_identity.json").write_text(json.dumps(data_identity, indent=2), encoding="utf-8")
     batch = int(cfg["training"]["batch_size"])
     collate = lambda xs: collate_sft(xs, tok.pad_token_id)
     # Sequential batches make a mid-epoch checkpoint resumable without storing
@@ -44,8 +53,7 @@ def train(config_path: str):
     valid_generator = torch.Generator().manual_seed(int(cfg.get("seed", 42)) + 1)
     train_dl = DataLoader(train_ds, batch_size=batch, shuffle=False, collate_fn=collate, generator=loader_generator)
     valid_dl = DataLoader(valid_ds, batch_size=batch, shuffle=False, collate_fn=collate, generator=valid_generator)
-    out = Path(cfg["training"]["output_dir"])
-    run_metadata = checkpoint_metadata(cfg, "sft")
+    run_metadata = checkpoint_metadata(cfg, "sft", data_identity)
     if resume:
         model = load_sft_policy(cfg["model"], resume, trainable=True, gradient_checkpointing=cfg["training"].get("gradient_checkpointing", False))
     else:
@@ -64,6 +72,10 @@ def train(config_path: str):
         for i, batch_data in enumerate(train_dl):
             if epoch == first_epoch and i < first_batch:
                 continue
+            if i % accum == 0:
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                optimizer_step_started = time.perf_counter()
             ids, mask = batch_data["input_ids"].to(device), batch_data["response_mask"].to(device)
             attn = batch_data["attention_mask"].to(device)
             loss = -sequence_logps(model(input_ids=ids, attention_mask=attn).logits, ids, mask).mean()
@@ -77,12 +89,16 @@ def train(config_path: str):
                 if not torch.isfinite(grad_norm):
                     raise FloatingPointError("Non-finite SFT gradient norm")
                 optimizer.step(); scheduler.step(); optimizer.zero_grad(set_to_none=True); step += 1
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                step_seconds = time.perf_counter() - optimizer_step_started
                 if step % int(cfg["training"].get("logging_steps", 10)) == 0:
-                    append_metrics(out / "train_metrics.jsonl", {"step": step, "epoch": epoch, "loss": float(loss.detach().cpu())})
+                    append_metrics(out / "train_metrics.jsonl", {"step": step, "epoch": epoch, "loss": float(loss.detach().cpu()), "step_seconds": step_seconds})
                 every = int(cfg["training"].get("save_steps", 100))
                 if every > 0 and step % every == 0:
                     checkpoint = save_checkpoint(model, optimizer, step, epoch, out, {"batch_in_epoch": i + 1}, scheduler, run_metadata)
-                    (checkpoint / "sft_manifest.json").write_text(__import__("json").dumps(manifest, indent=2), encoding="utf-8")
+                    (checkpoint / "sft_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+                    push_run_snapshot(out, hub_settings, int(cfg.get("seed", 42)), "sft")
         if len(valid_ds):
             model.eval(); vals = []
             with torch.no_grad():
@@ -93,10 +109,11 @@ def train(config_path: str):
             append_metrics(out / "eval_metrics.jsonl", {"step": step, "epoch": epoch, "loss": sum(vals) / len(vals)})
     out.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(out); tok.save_pretrained(out)
-    (out / "sft_manifest.json").write_text(__import__("json").dumps(manifest, indent=2), encoding="utf-8")
+    (out / "sft_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     # A full optimizer checkpoint is saved separately for a subsequent resume.
     checkpoint = save_checkpoint(model, optimizer, step, int(cfg["training"]["epochs"]), out, {"batch_in_epoch": 0}, scheduler, run_metadata)
-    (checkpoint / "sft_manifest.json").write_text(__import__("json").dumps(manifest, indent=2), encoding="utf-8")
+    (checkpoint / "sft_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    push_run_snapshot(out, hub_settings, int(cfg.get("seed", 42)), "sft")
     print(f"SFT complete: {out} (step={step})")
 
 

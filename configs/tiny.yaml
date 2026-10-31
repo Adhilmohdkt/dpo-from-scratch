@@ -12,11 +12,14 @@ model:
     target_modules: [c_attn]
 data:
   name: HuggingFaceH4/ultrafeedback_binarized
+  revision: 3949bf5f8c17c394422ccfab0c31ea9c20bdeb85
   train_preferences_split: train_prefs
   eval_preferences_split: test_prefs
   sft_split: train_sft
   validation_fraction: 0.2
   max_validation_samples: 4
+  validation_eval_samples: 8
+  eval_split_seed_offset: 2
   max_length: 256
   max_train_samples: 16
   train_row_ids_file: null
@@ -40,5 +43,5 @@ dpo:
   output_dir: checkpoints/tiny/dpo-beta-0.1
   reference_logps_path: checkpoints/tiny/reference_logps.pt
 evaluation:
-  max_new_tokens: 64
+  max_new_tokens: 256
   batch_size: 4

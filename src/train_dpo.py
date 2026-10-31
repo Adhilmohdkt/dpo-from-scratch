@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import time
 from pathlib import Path
 
 import torch
@@ -16,6 +17,7 @@ from transformers import get_linear_schedule_with_warmup
 from src.config import load_config
 from src.data import PREPROCESSING_VERSION, collate_preferences, load_preference_data
 from src.dpo_loss import dpo_loss, sequence_logps
+from src.hub import ensure_hub_repo, push_run_snapshot, resolve_resume_checkpoint
 from src.modeling import (base_model_identity, load_sft_manifest, load_sft_policy, load_tokenizer,
                           model_config_for_sft_manifest, resolve_device, validate_sft_tokenizer)
 from src.training import append_metrics, checkpoint_metadata, restore_training_state, save_checkpoint, set_seed
@@ -53,7 +55,7 @@ def reference_cache_matches(cache_path: Path, metadata_path: Path, expected: dic
         return False
 
 
-def build_reference_cache_metadata(cfg: dict, sft_path: Path, train_dataset, tokenizer, model_identity: dict) -> dict:
+def build_reference_cache_metadata(cfg: dict, sft_path: Path, train_dataset, tokenizer, model_identity: dict, data_identity: dict | None = None) -> dict:
     adapter_files = sorted(sft_path.glob("adapter*"))
     if not adapter_files:
         raise FileNotFoundError(f"No saved LoRA adapter files found in {sft_path}")
@@ -85,6 +87,7 @@ def build_reference_cache_metadata(cfg: dict, sft_path: Path, train_dataset, tok
         "max_length": data_cfg.get("max_length", 1024),
         "model_identity": model_identity,
         "tokenizer_identity": tokenizer_identity(tokenizer),
+        "dataset_identity": data_identity,
     }
 
 
@@ -92,6 +95,9 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
     cfg = load_config(config_path)
     set_seed(int(cfg.get("seed", 42)))
     device = resolve_device(cfg["training"].get("device", "auto"))
+    hub_settings = cfg.get("hub", {})
+    ensure_hub_repo(hub_settings)
+    resume = resolve_resume_checkpoint(resume or cfg["training"].get("resume_from_checkpoint"), hub_settings)
     if not cfg["model"].get("use_lora", False):
         raise ValueError("Current DPO trainer expects a saved LoRA SFT checkpoint")
     if train_row_ids_file:
@@ -108,7 +114,10 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
     tok = load_tokenizer(cfg["model"]["name_or_path"], cfg["model"].get("trust_remote_code", False), cfg["model"].get("revision"))
     validate_sft_tokenizer(tok, manifest)
     data_cfg = {**cfg["data"], "seed": int(cfg.get("seed", 42))}
-    train_ds, valid_ds = load_preference_data(data_cfg, tok)
+    train_ds, valid_ds, data_identity = load_preference_data(data_cfg, tok, return_identity=True)
+    out = Path(cfg["dpo"].get("output_dir", str(Path(cfg["training"]["output_dir"]) / "dpo")))
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dataset_identity.json").write_text(json.dumps(data_identity, indent=2), encoding="utf-8")
     batch_size = int(cfg["training"]["batch_size"])
     collate = lambda xs: collate_preferences(xs, tok.pad_token_id)
     loader_generator = torch.Generator().manual_seed(int(cfg.get("seed", 42)))
@@ -120,7 +129,7 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
     # be reused after changing the SFT checkpoint or data/tokenization setup.
     meta_path = cache_path.with_suffix(cache_path.suffix + ".json")
     model_identity = base_model_identity(cfg["model"])
-    expected = build_reference_cache_metadata(cfg, sft_path, train_ds, tok, model_identity)
+    expected = build_reference_cache_metadata(cfg, sft_path, train_ds, tok, model_identity, data_identity)
     can_use = cache_path.exists() and meta_path.exists() and not force_reference and reference_cache_matches(cache_path, meta_path, expected, len(train_ds))
     if not can_use:
         reference_model = load_sft_policy(cfg["model"], str(sft_path), trainable=False).to(device)
@@ -137,15 +146,18 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
         if reference.shape != (len(train_ds), 2):
             raise ValueError("Reference-logprob cache has the wrong shape")
     beta = float(beta_override if beta_override is not None else cfg["dpo"]["beta"])
-    run_metadata = checkpoint_metadata(cfg, "dpo")
+    run_metadata = checkpoint_metadata(cfg, "dpo", data_identity)
     run_metadata["effective_beta"] = beta
     if cfg["data"].get("train_row_ids_file"):
         run_metadata["train_row_ids_sha256"] = hashlib.sha256(Path(cfg["data"]["train_row_ids_file"]).read_bytes()).hexdigest()
-    out = Path(cfg["dpo"].get("output_dir", str(Path(cfg["training"]["output_dir"]) / "dpo")))
     configured_beta = float(cfg["dpo"]["beta"])
     if beta_override is not None and beta != configured_beta and output_dir is None:
         out = Path(cfg["training"]["output_dir"]).parent / f"dpo-beta-{beta:g}"
-    resume = resume or cfg["training"].get("resume_from_checkpoint")
+    out.mkdir(parents=True, exist_ok=True)
+    run_config = dict(cfg)
+    run_config["dpo"] = {**cfg["dpo"], "beta": beta, "output_dir": str(out)}
+    run_config["training"] = {**cfg["training"], "resume_from_checkpoint": resume}
+    (out / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
     policy = load_sft_policy(cfg["model"], str(resume or sft_path), trainable=True, gradient_checkpointing=cfg["training"].get("gradient_checkpointing", False)).to(device)
     optimizer = torch.optim.AdamW((p for p in policy.parameters() if p.requires_grad), lr=float(cfg["training"]["learning_rate"]), weight_decay=float(cfg["training"].get("weight_decay", 0)))
     accum = int(cfg["training"].get("gradient_accumulation_steps", 1))
@@ -160,6 +172,10 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
         for i, batch in enumerate(train_dl):
             if epoch == first_epoch and i < first_batch:
                 continue
+            if i % accum == 0:
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                optimizer_step_started = time.perf_counter()
             pc = _score(policy, batch["chosen_input_ids"], batch["chosen_response_mask"], batch["chosen_attention_mask"], device)
             pr = _score(policy, batch["rejected_input_ids"], batch["rejected_response_mask"], batch["rejected_attention_mask"], device)
             refs = reference[batch["indices"]]
@@ -174,11 +190,15 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
                 if not torch.isfinite(norm):
                     raise FloatingPointError("Non-finite gradient norm")
                 optimizer.step(); scheduler.step(); optimizer.zero_grad(set_to_none=True); step += 1
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                step_seconds = time.perf_counter() - optimizer_step_started
                 if step % int(cfg["training"].get("logging_steps", 10)) == 0:
-                    append_metrics(out / "train_metrics.jsonl", {"step": step, "epoch": epoch, "loss": float(loss.detach().cpu()), "reward_accuracy": float(metrics["reward_accuracy"].mean().cpu()), "reward_margin": float(metrics["reward_margin"].mean().cpu()), "beta": beta})
+                    append_metrics(out / "train_metrics.jsonl", {"step": step, "epoch": epoch, "loss": float(loss.detach().cpu()), "reward_accuracy": float(metrics["reward_accuracy"].mean().cpu()), "reward_margin": float(metrics["reward_margin"].mean().cpu()), "beta": beta, "step_seconds": step_seconds})
                 every = int(cfg["training"].get("save_steps", 100))
                 if every > 0 and step % every == 0:
                     save_checkpoint(policy, optimizer, step, epoch, out, {"batch_in_epoch": i + 1}, scheduler, run_metadata)
+                    push_run_snapshot(out, hub_settings, int(cfg.get("seed", 42)), "dpo")
         if len(valid_ds):
             policy.eval(); eval_correct, eval_seen = 0.0, 0
             with torch.no_grad():
@@ -190,6 +210,7 @@ def train(config_path: str, sft_checkpoint: str | None = None, resume: str | Non
     out.mkdir(parents=True, exist_ok=True)
     policy.save_pretrained(out); tok.save_pretrained(out)
     save_checkpoint(policy, optimizer, step, int(cfg["training"]["epochs"]), out, {"batch_in_epoch": 0}, scheduler, run_metadata)
+    push_run_snapshot(out, hub_settings, int(cfg.get("seed", 42)), "dpo")
     print(f"DPO complete: {out} (step={step}, beta={beta})")
 
 

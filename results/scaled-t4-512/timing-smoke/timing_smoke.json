@@ -1,0 +1,50 @@
+{
+  "runtime": {
+    "python": "3.13.16",
+    "pytorch": "2.11.0+cu130",
+    "gpu": "Tesla T4",
+    "gpu_memory_mib_total": 15360
+  },
+  "configuration": {
+    "optimizer_steps": 50,
+    "max_length": 512,
+    "batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "synthetic": false,
+    "dataset": "HuggingFaceH4/ultrafeedback_binarized",
+    "training_rows": 400
+  },
+  "runs": {
+    "sft-timed": {
+      "steps_logged": 50,
+      "mean_step_seconds": 3.057792351179992,
+      "median_step_seconds": 3.0309732405000887,
+      "stdev_step_seconds": 0.11491219157053614,
+      "min_step_seconds": 2.926758500999995,
+      "max_step_seconds": 3.455210251000153,
+      "sum_step_seconds": 152.8896175589996,
+      "process_wall_seconds_including_setup_and_final_save": 176.399
+    },
+    "dpo": {
+      "steps_logged": 50,
+      "mean_step_seconds": 6.118700254560001,
+      "median_step_seconds": 6.0754946659999405,
+      "stdev_step_seconds": 0.14549329649660456,
+      "min_step_seconds": 5.914160425999853,
+      "max_step_seconds": 6.475042685000062,
+      "sum_step_seconds": 305.93501272800006,
+      "process_wall_seconds_including_setup_and_final_save": 406.861
+    }
+  },
+  "observed_gpu_memory_samples_mib": {
+    "sft_at_step_36": 2403,
+    "dpo_during_training": 2739,
+    "note": "sampled values, not peak allocations"
+  },
+  "limitations": [
+    "50 optimizer steps per SFT and DPO smoke, 400 actual train examples, one pass",
+    "process wall time includes model/data/reference setup and checkpoint saves",
+    "GPU memory values are samples, not measured peaks",
+    "HF_TOKEN was absent, so no Hub upload was attempted"
+  ]
+}

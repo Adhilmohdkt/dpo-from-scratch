@@ -1,0 +1,86 @@
+# Time-boxed T4 plan selected from the 50-step timing smoke.
+seed: 42
+model:
+  name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  revision: main
+  trust_remote_code: false
+  torch_dtype: float16
+  use_lora: true
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+data:
+  name: HuggingFaceH4/ultrafeedback_binarized
+  revision: 3949bf5f8c17c394422ccfab0c31ea9c20bdeb85
+  train_preferences_split: train_prefs
+  eval_preferences_split: test_prefs
+  sft_split: train_sft
+  validation_fraction: 0.02
+  max_validation_samples: 32
+  validation_eval_samples: 500
+  eval_split_seed_offset: 2
+  max_length: 512
+  max_train_samples: 512
+  train_row_ids_file: null
+  max_eval_samples: 500
+training:
+  output_dir: results/scaled-t4-512/seed-42/sft
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 0.00005
+  weight_decay: 0.0
+  epochs: 1
+  logging_steps: 1
+  save_steps: 10
+  max_grad_norm: 1.0
+  num_workers: 0
+  device: cuda
+  resume_from_checkpoint: null
+  gradient_checkpointing: true
+dpo:
+  beta: 0.1
+  sft_checkpoint: results/scaled-t4-512/seed-42/sft
+  output_dir: results/scaled-t4-512/seed-42/dpo-beta-0.1
+  reference_logps_path: results/scaled-t4-512/seed-42/reference/full.pt
+evaluation:
+  split: validation
+  output_dir: results/scaled-t4-512/evaluation
+  max_new_tokens: 256
+  batch_size: 8
+  checkpoints: {}
+  beta_by_checkpoint: {}
+experiment:
+  name: scaled-t4-512
+  output_dir: results/scaled-t4-512
+  seeds: [42]
+  max_gpu_hours: 3
+  beta_values: [0.1, 0.5]
+  selection_subset_size: 128
+  selection_beta: 0.1
+  selection_label: simplified_version
+  timing_smoke:
+    python: 3.13.16
+    torch: 2.11.0+cu130
+    gpu: Tesla T4
+    max_length: 512
+    batch_size: 1
+    gradient_accumulation_steps: 8
+    optimizer_steps: 50
+    sft_mean_seconds_per_step: 3.0577923512
+    dpo_mean_seconds_per_step: 6.1187002546
+    measured_process_wall_seconds: {sft: 176.399, dpo: 406.861}
+  estimated_optimizer_work_seconds:
+    sft_512_pairs_64_steps: 195.7
+    dpo_full_512_pairs_64_steps_each: 391.6
+    dpo_subset_128_pairs_16_steps_each: 97.9
+    total_sft_plus_four_dpo_arms: 1174.0
+    caveat: "Optimizer-time extrapolation only; excludes model/data loading, reference scoring, Hub transfers, and six-checkpoint validation generation."
+hub:
+  enabled: true
+  repo_id: null # Set to your private Hugging Face model repo, e.g. account/dpo-run-artifacts.
+  private: true
+  token_env: HF_TOKEN
+  run_prefix: scaled-t4-512
+  restore_dir: /content/dpo-from-scratch/hub_restore

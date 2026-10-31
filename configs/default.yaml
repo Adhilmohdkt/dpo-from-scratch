@@ -13,16 +13,18 @@ model:
     target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 data:
   name: HuggingFaceH4/ultrafeedback_binarized
-  revision: main
+  revision: 3949bf5f8c17c394422ccfab0c31ea9c20bdeb85
   train_preferences_split: train_prefs
   eval_preferences_split: test_prefs
   sft_split: train_sft
   validation_fraction: 0.02
   max_validation_samples: 512
+  validation_eval_samples: 500
+  eval_split_seed_offset: 2
   max_length: 1024
   max_train_samples: null
   train_row_ids_file: null
-  max_eval_samples: 200
+  max_eval_samples: 500
 training:
   output_dir: checkpoints/qwen25-05b/sft
   batch_size: 1
@@ -44,7 +46,7 @@ dpo:
   reference_logps_path: checkpoints/qwen25-05b/reference_logps.pt
 evaluation:
   split: validation
-  max_new_tokens: 128
+  max_new_tokens: 256
   batch_size: 2
   checkpoints:
     base: null

@@ -163,6 +163,29 @@ def _require_columns(dataset, required: set[str], split_name: str):
         raise ValueError(f"Split {split_name!r} is missing required columns: {sorted(missing)}")
 
 
+def _row_ids_sha256(rows) -> str:
+    ids = [int(value) for value in rows[SOURCE_ROW_ID]] if SOURCE_ROW_ID in rows.column_names else []
+    return hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def dataset_identity(cfg: dict, split_name: str, fingerprint: str | None, selected_rows, validation_rows=None) -> dict:
+    revision = str(cfg.get("revision", ""))
+    if len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision.lower()):
+        raise ValueError("Dataset identity requires an immutable 40-character revision SHA")
+    if not fingerprint:
+        raise ValueError("Hugging Face dataset did not provide a fingerprint")
+    return {
+        "dataset": cfg["name"],
+        "revision": revision,
+        "split": split_name,
+        "fingerprint": fingerprint,
+        "selected_rows": len(selected_rows),
+        "selected_row_ids_sha256": _row_ids_sha256(selected_rows),
+        "validation_rows": len(validation_rows) if validation_rows is not None else None,
+        "validation_row_ids_sha256": _row_ids_sha256(validation_rows) if validation_rows is not None else None,
+    }
+
+
 def load_preference_training_rows(cfg: dict):
     """Return capped train/validation rows and the raw dataset fingerprint."""
     name = cfg["name"]
@@ -219,36 +242,82 @@ def _apply_train_row_ids(train, valid, cfg: dict, fingerprint: str | None):
     return train.select(selected_indices)
 
 
-def load_preference_data(cfg: dict, tokenizer):
+def load_preference_data(cfg: dict, tokenizer, return_identity: bool = False):
     train, valid, fingerprint = load_preference_training_rows(cfg)
     train = _apply_train_row_ids(train, valid, cfg, fingerprint)
     max_len = int(cfg.get("max_length", 1024))
-    return PreferenceDataset(train, tokenizer, max_len), PreferenceDataset(valid, tokenizer, max_len)
+    train_dataset = PreferenceDataset(train, tokenizer, max_len)
+    valid_dataset = PreferenceDataset(valid, tokenizer, max_len)
+    if return_identity:
+        split = cfg.get("train_preferences_split", "train_prefs")
+        return train_dataset, valid_dataset, dataset_identity(cfg, split, fingerprint, train, valid)
+    return train_dataset, valid_dataset
 
 
 def load_preference_test_data(cfg: dict, tokenizer):
-    """Load the final held-out preference split for final evaluation only."""
+    """Load the fixed final held-out preference partition for final evaluation."""
+    return load_preference_eval_data(cfg, tokenizer, split="test")
+
+
+def load_preference_eval_data(cfg: dict, tokenizer, split: str, return_identity: bool = False):
+    """Load disjoint validation/test subsets from the official held-out prefs split.
+
+    A deterministic permutation assigns non-overlapping index ranges. The
+    validation path selects only its own rows; it never constructs or reads the
+    final-test slice. The final-test range is selected only when split="test".
+    """
+    if split not in {"validation", "test"}:
+        raise ValueError("split must be 'validation' or 'test'")
     name = cfg["name"]
     kwargs = {"revision": cfg["revision"]} if cfg.get("revision") else {}
     split_name = cfg.get("eval_preferences_split", "test_prefs")
     rows = load_dataset(name, split=split_name, **kwargs)
     _require_columns(rows, {"chosen", "rejected", "prompt_id"}, split_name)
-    rows = _slice_rows(rows, cfg.get("max_eval_samples"), int(cfg.get("seed", 42)) + 2)
-    return PreferenceDataset(rows, tokenizer, int(cfg.get("max_length", 1024)))
+    if SOURCE_ROW_ID in rows.column_names:
+        raise ValueError(f"Dataset already contains reserved column {SOURCE_ROW_ID}")
+    fingerprint = getattr(rows, "_fingerprint", None)
+    seed = int(cfg.get("seed", 42)) + int(cfg.get("eval_split_seed_offset", 2))
+    rows = rows.shuffle(seed=seed)
+    validation_count = int(cfg.get("validation_eval_samples", 500))
+    test_count = int(cfg.get("max_eval_samples", 500))
+    if validation_count < 1 or test_count < 1:
+        raise ValueError("Validation and final-test sample counts must both be positive")
+    required = validation_count + test_count
+    if len(rows) < required:
+        raise ValueError(
+            f"Held-out split {split_name!r} has {len(rows)} rows; "
+            f"{required} are required for {validation_count} validation and {test_count} test pairs"
+        )
+    start = 0 if split == "validation" else validation_count
+    stop = validation_count if split == "validation" else required
+    selected = rows.select(range(start, stop))
+    selected = selected.add_column(SOURCE_ROW_ID, list(range(start, stop)))
+    result = PreferenceDataset(selected, tokenizer, int(cfg.get("max_length", 1024)))
+    if return_identity:
+        return result, dataset_identity(cfg, split_name, fingerprint, selected)
+    return result
 
 
-def load_sft_data(cfg: dict, tokenizer):
+def load_sft_data(cfg: dict, tokenizer, return_identity: bool = False):
     name = cfg["name"]
     kwargs = {"revision": cfg["revision"]} if cfg.get("revision") else {}
     split_name = cfg.get("sft_split", "train_sft")
     rows = load_dataset(name, split=split_name, **kwargs)
     _require_columns(rows, {"messages", "prompt_id"}, split_name)
+    fingerprint = getattr(rows, "_fingerprint", None)
+    if SOURCE_ROW_ID in rows.column_names:
+        raise ValueError(f"Dataset already contains reserved column {SOURCE_ROW_ID}")
+    rows = rows.add_column(SOURCE_ROW_ID, list(range(len(rows))))
     seed = int(cfg.get("seed", 42))
     train, valid = split_train_validation(rows, float(cfg.get("validation_fraction", 0.02)), seed)
     train = _slice_rows(train, cfg.get("max_train_samples"), seed)
     valid = _slice_rows(valid, cfg.get("max_validation_samples"), seed + 1)
     max_len = int(cfg.get("max_length", 1024))
-    return SFTDataset(train, tokenizer, max_len), SFTDataset(valid, tokenizer, max_len)
+    train_dataset = SFTDataset(train, tokenizer, max_len)
+    valid_dataset = SFTDataset(valid, tokenizer, max_len)
+    if return_identity:
+        return train_dataset, valid_dataset, dataset_identity(cfg, split_name, fingerprint, train, valid)
+    return train_dataset, valid_dataset
 
 
 def _pad(sequences: Sequence[Sequence[int]], pad_value: int) -> torch.Tensor:

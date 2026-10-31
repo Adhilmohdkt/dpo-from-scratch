@@ -1,0 +1,74 @@
+{
+  "training_logs": [
+    {
+      "log": "results\\pilot-128\\training_logs\\dpo-beta-0.1_train_metrics.jsonl",
+      "records": 16,
+      "loss": {
+        "first": 0.704936146736145,
+        "last": 0.17990484833717346,
+        "min": 0.17990484833717346,
+        "max": 0.8082417845726013,
+        "changed": true,
+        "linear_slope_per_logged_step": -0.017079374763895483
+      },
+      "train_batch_reward_accuracy": {
+        "first": 0.0,
+        "last": 1.0,
+        "mean": 0.625,
+        "distinct_values": [
+          0.0,
+          1.0
+        ],
+        "changed": true
+      }
+    },
+    {
+      "log": "results\\pilot-128\\training_logs\\sft_train_metrics.jsonl",
+      "records": 16,
+      "loss": {
+        "first": 682.4324951171875,
+        "last": 697.0101928710938,
+        "min": 0.2424069494009018,
+        "max": 697.0101928710938,
+        "changed": true,
+        "linear_slope_per_logged_step": -16.443542204643872
+      }
+    }
+  ],
+  "adapter_movement": {
+    "initial_adapter": "results\\pilot-128\\checkpoints\\sft",
+    "trained_adapter": "results\\pilot-128\\checkpoints\\dpo-beta-0.1",
+    "tensor_count": 336,
+    "tensors_with_nonzero_change": 336,
+    "l2_distance": 0.48208879358354356,
+    "initial_l2_norm": 29.938038094884263,
+    "relative_l2_distance": 0.016102885301155445
+  },
+  "evaluation_wiring": {
+    "evaluator_file": "src\\evaluate.py",
+    "trained_checkpoint_passed_to_frozen_adapter_loader": true,
+    "reference_loaded_from_separate_sft_adapter": true,
+    "reference_adapter_disabled": false,
+    "reference_design": "a separate frozen copy of the SFT adapter is loaded; this preserves the SFT reference policy",
+    "evaluation_metric": "fraction of held-out pairs where the checkpoint assigns greater summed response-token log-probability to chosen than rejected; exact ties currently count as incorrect"
+  },
+  "step_zero_invariant": {
+    "device": "cpu",
+    "policy_equals_reference": true,
+    "reward_margin": 0.0,
+    "tie_aware_accuracy": 0.5,
+    "current_strict_greater_than_zero_accuracy": 0.0,
+    "loss": 0.6931471824645996,
+    "assertions_passed": true
+  },
+  "pilot_accuracy": {
+    "successes": 18,
+    "trials": 32,
+    "accuracy": 0.5625,
+    "wilson_95_ci": [
+      0.3932559113685198,
+      0.7183466888495963
+    ]
+  },
+  "diagnosis": "The pilot's minibatch loss and reward accuracy change. The 32-pair evaluation is imprecise. See the tie-reporting bug in evaluation_wiring; this does not change the DPO loss."
+}

@@ -37,7 +37,9 @@ def plot_metrics(metrics_csv: str | Path, output_path: str | Path) -> Path:
 
     axes[1].bar(positions, [float(row["response_length_tokens_mean"]) for row in rows], color="#5b9a73")
     axes[1].set_title("Generated response length")
-    axes[1].set_ylabel("Mean tokens (max 64)")
+    caps = {row.get("generation_max_new_tokens") for row in rows if row.get("generation_max_new_tokens")}
+    cap_label = f" (cap {next(iter(caps))})" if len(caps) == 1 else ""
+    axes[1].set_ylabel(f"Mean tokens{cap_label}")
 
     if "implicit_reward_margin_mean" in rows[0]:
         values = []

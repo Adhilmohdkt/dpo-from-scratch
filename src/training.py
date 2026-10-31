@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import csv
+import os
 import random
 from pathlib import Path
 
@@ -9,9 +11,11 @@ import numpy as np
 import torch
 
 
-def checkpoint_metadata(cfg: dict, stage: str) -> dict:
+def checkpoint_metadata(cfg: dict, stage: str, dataset_identity: dict | None = None) -> dict:
     training = {k: v for k, v in cfg.get("training", {}).items() if k != "resume_from_checkpoint"}
     result = {"stage": stage, "seed": cfg.get("seed", 42), "model": cfg["model"], "data": cfg["data"], "training": training}
+    if dataset_identity is not None:
+        result["dataset_identity"] = dataset_identity
     if stage == "dpo":
         result["dpo"] = cfg["dpo"]
     return result
@@ -78,3 +82,24 @@ def append_metrics(path: str | Path, record: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, allow_nan=False) + "\n")
+    csv_path = path.with_suffix(".csv")
+    new_fields = list(record)
+    existing_rows = []
+    fields = new_fields
+    if csv_path.exists():
+        with csv_path.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            old_fields = reader.fieldnames or []
+            existing_rows = list(reader)
+        fields = old_fields + [key for key in new_fields if key not in old_fields]
+    if csv_path.exists() and fields == old_fields:
+        with csv_path.open("a", encoding="utf-8", newline="") as stream:
+            csv.DictWriter(stream, fieldnames=fields).writerow(record)
+    else:
+        temporary = csv_path.with_suffix(csv_path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(existing_rows)
+            writer.writerow(record)
+        os.replace(temporary, csv_path)

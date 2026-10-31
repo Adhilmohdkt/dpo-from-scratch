@@ -134,6 +134,10 @@ class TestReferenceAndResume(unittest.TestCase):
             optimizer.step()
             scheduler.step()
             metadata = {"stage": "sft", "model": "tiny", "max_length": 32}
+            metadata["dataset_identity"] = {
+                "dataset": "fixture/data", "revision": "a" * 40,
+                "split": "train_sft", "fingerprint": "fingerprint-v1",
+            }
             path = save_checkpoint(model, optimizer, 7, 2, tmp, {"batch_in_epoch": 5}, scheduler, metadata)
             saved_weight = model.weight.detach().clone()
             model.weight.data.add_(10)
@@ -146,6 +150,9 @@ class TestReferenceAndResume(unittest.TestCase):
             self.assertTrue(torch.equal(resumed.weight.detach(), saved_weight))
             with self.assertRaises(ValueError):
                 restore_training_state(optimizer, path, scheduler, {"stage": "sft", "model": "changed"})
+            changed_fingerprint = {**metadata, "dataset_identity": {**metadata["dataset_identity"], "fingerprint": "fingerprint-v2"}}
+            with self.assertRaisesRegex(ValueError, "different model/data/training configuration"):
+                restore_training_state(optimizer, path, scheduler, changed_fingerprint)
 
     def test_reference_cache_identity_covers_checkpoint_tokenizer_data_and_preprocessing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,31 +175,41 @@ class TestReferenceAndResume(unittest.TestCase):
             tokenizer = FakeTokenizer()
             dataset = TrainDataset()
             identity = {"source": "org/model", "resolved_commit": "commit-a"}
-            expected = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity)
+            data_identity = {
+                "dataset": "org/data", "revision": "data-a", "split": "train_prefs",
+                "fingerprint": "source-fingerprint-v1", "selected_rows": 2,
+            }
+            expected = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity, data_identity)
             cache = Path(tmp, "reference.pt")
             metadata_path = Path(tmp, "reference.pt.json")
             torch.save(torch.ones((2, 2)), cache)
             metadata_path.write_text(json.dumps(expected), encoding="utf-8")
             self.assertTrue(reference_cache_matches(cache, metadata_path, expected, 2))
 
+            changed_source = build_reference_cache_metadata(
+                cfg, sft_dir, dataset, tokenizer, identity,
+                {**data_identity, "fingerprint": "source-fingerprint-v2"},
+            )
+            self.assertFalse(reference_cache_matches(cache, metadata_path, changed_source, 2))
+
             changed_tokenizer = FakeTokenizer()
             changed_tokenizer.backend_tokenizer = SimpleNamespace(to_str=lambda: "backend-vocab-v2")
-            changed = build_reference_cache_metadata(cfg, sft_dir, dataset, changed_tokenizer, identity)
+            changed = build_reference_cache_metadata(cfg, sft_dir, dataset, changed_tokenizer, identity, data_identity)
             self.assertFalse(reference_cache_matches(cache, metadata_path, changed, 2))
 
-            changed_model = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, {"source": "org/model", "resolved_commit": "commit-b"})
+            changed_model = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, {"source": "org/model", "resolved_commit": "commit-b"}, data_identity)
             self.assertFalse(reference_cache_matches(cache, metadata_path, changed_model, 2))
 
             changed_cfg = {**cfg, "data": {**cfg["data"], "revision": "data-b", "max_length": 96}}
-            changed_data = build_reference_cache_metadata(changed_cfg, sft_dir, dataset, tokenizer, identity)
+            changed_data = build_reference_cache_metadata(changed_cfg, sft_dir, dataset, tokenizer, identity, data_identity)
             self.assertFalse(reference_cache_matches(cache, metadata_path, changed_data, 2))
 
             dataset.rows._fingerprint = "dataset-fingerprint-2"
-            changed_fingerprint = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity)
+            changed_fingerprint = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity, data_identity)
             self.assertFalse(reference_cache_matches(cache, metadata_path, changed_fingerprint, 2))
 
             (sft_dir / "adapter_model.safetensors").write_bytes(b"adapter-v2")
-            changed_adapter = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity)
+            changed_adapter = build_reference_cache_metadata(cfg, sft_dir, dataset, tokenizer, identity, data_identity)
             self.assertFalse(reference_cache_matches(cache, metadata_path, changed_adapter, 2))
 
             cache.write_bytes(b"corrupt")
