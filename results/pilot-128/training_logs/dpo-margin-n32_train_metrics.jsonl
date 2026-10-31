@@ -1,0 +1,4 @@
+{"step": 1, "epoch": 0, "loss": 0.6824769973754883, "reward_accuracy": 1.0, "reward_margin": 0.02145538292825222, "beta": 0.1}
+{"step": 2, "epoch": 0, "loss": 0.6347820162773132, "reward_accuracy": 1.0, "reward_margin": 0.12034912407398224, "beta": 0.1}
+{"step": 3, "epoch": 0, "loss": 0.5792144536972046, "reward_accuracy": 1.0, "reward_margin": 0.24253539741039276, "beta": 0.1}
+{"step": 4, "epoch": 0, "loss": 0.5754371881484985, "reward_accuracy": 1.0, "reward_margin": 0.25114747881889343, "beta": 0.1}

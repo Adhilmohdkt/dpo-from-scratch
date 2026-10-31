@@ -21,6 +21,21 @@ def _messages(value: Any) -> list[dict[str, str]]:
     return [{"role": str(m["role"]), "content": str(m["content"])} for m in value]
 
 
+def _flat_token_ids(value: Any) -> list[int]:
+    """Normalize tokenizer outputs from Transformers 4 and 5 to one ID list."""
+    if isinstance(value, dict) or hasattr(value, "input_ids"):
+        value = value["input_ids"]
+    if hasattr(value, "ids"):
+        value = value.ids
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().tolist()
+    if value and isinstance(value[0], (list, tuple)):
+        if len(value) != 1:
+            raise ValueError("Chat-template tokenization unexpectedly returned multiple sequences")
+        value = value[0]
+    return [int(token_id) for token_id in value]
+
+
 def _encode_conversation(tokenizer, messages: list[dict[str, str]], max_length: int):
     if max_length < 2:
         raise ValueError("max_length must be at least 2 to score a response token")
@@ -33,12 +48,8 @@ def _encode_conversation(tokenizer, messages: list[dict[str, str]], max_length: 
     prompt = messages[:answer_at]
     if not prompt:
         raise ValueError("Conversation has no user/context prompt")
-    prefix_ids = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True)
-    full_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False)
-    if isinstance(prefix_ids, torch.Tensor):
-        prefix_ids = prefix_ids.tolist()
-    if isinstance(full_ids, torch.Tensor):
-        full_ids = full_ids.tolist()
+    prefix_ids = _flat_token_ids(tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True))
+    full_ids = _flat_token_ids(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False))
     # Padding/truncation are disabled above; verify the generation prefix is
     # exactly the beginning of the fully rendered conversation.
     if full_ids[: len(prefix_ids)] != prefix_ids:

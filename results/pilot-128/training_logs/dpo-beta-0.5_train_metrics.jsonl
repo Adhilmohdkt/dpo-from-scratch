@@ -1,0 +1,16 @@
+{"step": 1, "epoch": 0, "loss": 0.7534646391868591, "reward_accuracy": 0.0, "reward_margin": -0.1172027587890625, "beta": 0.5}
+{"step": 2, "epoch": 0, "loss": 0.6285578608512878, "reward_accuracy": 1.0, "reward_margin": 0.13364028930664062, "beta": 0.5}
+{"step": 3, "epoch": 0, "loss": 0.12856391072273254, "reward_accuracy": 1.0, "reward_margin": 1.986358642578125, "beta": 0.5}
+{"step": 4, "epoch": 0, "loss": 0.7703143358230591, "reward_accuracy": 0.0, "reward_margin": -0.1488037109375, "beta": 0.5}
+{"step": 5, "epoch": 0, "loss": 0.05314924940466881, "reward_accuracy": 1.0, "reward_margin": 2.907958984375, "beta": 0.5}
+{"step": 6, "epoch": 0, "loss": 0.8499934673309326, "reward_accuracy": 0.0, "reward_margin": -0.29239463806152344, "beta": 0.5}
+{"step": 7, "epoch": 0, "loss": 1.0374253988265991, "reward_accuracy": 0.0, "reward_margin": -0.5999031066894531, "beta": 0.5}
+{"step": 8, "epoch": 0, "loss": 0.07532348483800888, "reward_accuracy": 1.0, "reward_margin": 2.548065185546875, "beta": 0.5}
+{"step": 9, "epoch": 0, "loss": 0.7354088425636292, "reward_accuracy": 0.0, "reward_margin": -0.0828094482421875, "beta": 0.5}
+{"step": 10, "epoch": 0, "loss": 1.1643565893173218, "reward_accuracy": 0.0, "reward_margin": -0.7902107238769531, "beta": 0.5}
+{"step": 11, "epoch": 0, "loss": 0.2496984452009201, "reward_accuracy": 1.0, "reward_margin": 1.2600555419921875, "beta": 0.5}
+{"step": 12, "epoch": 0, "loss": 0.18015047907829285, "reward_accuracy": 1.0, "reward_margin": 1.6225357055664062, "beta": 0.5}
+{"step": 13, "epoch": 0, "loss": 0.12469307333230972, "reward_accuracy": 1.0, "reward_margin": 2.0189056396484375, "beta": 0.5}
+{"step": 14, "epoch": 0, "loss": 0.43883100152015686, "reward_accuracy": 1.0, "reward_margin": 0.5962142944335938, "beta": 0.5}
+{"step": 15, "epoch": 0, "loss": 0.3304426372051239, "reward_accuracy": 1.0, "reward_margin": 0.9375553131103516, "beta": 0.5}
+{"step": 16, "epoch": 0, "loss": 0.014461376704275608, "reward_accuracy": 1.0, "reward_margin": 4.229034423828125, "beta": 0.5}

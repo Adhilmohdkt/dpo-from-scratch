@@ -4,7 +4,7 @@ A research-oriented implementation of supervised fine-tuning (SFT) and Direct Pr
 
 ## Current status
 
-The SFT/DPO trainers, cache validation, checkpoint resumption, held-out scoring, generation export, train-only subset selection, and result aggregation are implemented. All 21 local CPU unit tests pass. A complete run on UltraFeedback or Qwen, GPU training, and Colab execution have not been performed. No experiment results are checked in or claimed. Result tables must come from actual runs.
+The SFT/DPO trainers, cache validation, checkpoint resumption, held-out scoring, generation export, train-only subset selection, and result aggregation are implemented. On the Colab Python 3.13.16 / PyTorch 2.11.0+cu130 Tesla T4 stack, 24 tests passed and one legacy TRL helper comparison was skipped. Qwen loading, LoRA injection, and two-step synthetic SFT and DPO pipeline smoke runs passed, including checkpoint/reference checks. A real-data, 128-example pilot and validation comparison were run on the T4; the full UltraFeedback experiments remain incomplete. Results below are pilot evidence, not claims about full-dataset performance.
 
 ## Setup
 
@@ -16,7 +16,31 @@ source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-The dependency set was installed and checked together in a clean Python 3.12 environment (`pip check` passed): PyTorch 2.5.1, Transformers 4.46.3, PEFT 0.13.2, Datasets 3.1.0, TRL 0.12.2, Accelerate 1.1.1, and PyYAML 6.0.2. For Colab, use `notebooks/colab_run.ipynb` and keep Colab’s preinstalled CUDA-enabled PyTorch. The notebook installs the other pinned packages from `requirements-colab.txt`; that file intentionally omits `torch` so it cannot replace the runtime build. PyTorch 2.5/torchvision 0.20 supports Python only through 3.12, while current Colab runtimes use Python 3.13; the [Colab runtime FAQ](https://research.google.com/colaboratory/runtime-version-faq.html) and [PyTorch/torchvision compatibility matrix](https://github.com/pytorch/vision) are the references for runtime changes. The local `requirements.txt` targets Python 3.11/3.12 and retains the tested PyTorch 2.5.1 pin. The default Qwen config uses fp16 and LoRA. Use `configs/tiny.yaml` for a CPU run; it downloads model and dataset artifacts from Hugging Face, so it is not an offline test.
+The local dependency set was installed and checked in a clean Python 3.12 environment (`pip check` passed): PyTorch 2.5.1, Transformers 4.46.3, PEFT 0.13.2, Datasets 3.1.0, TRL 0.12.2, Accelerate 1.1.1, and PyYAML 6.0.2. For Colab, use `notebooks/colab_run.ipynb` and keep Colab’s preinstalled CUDA-enabled PyTorch. `requirements-colab.txt` pins Transformers 5.21.0, PEFT 0.21.2, TorchAO 0.18.0, Datasets 4.8.5, TRL 1.17.1, Accelerate 1.15.0, PyYAML 6.0.2, and Colab's `fsspec` 2025.12.0; it intentionally omits `torch` and `torchvision`. TorchAO is pinned because the Colab image's 0.10.0 package is rejected by PEFT 0.21.2. TRL 0.12.2 cannot be used with Transformers 5 because it requires Transformers below 4.47; the Colab pin uses TRL 1.17.1. Local CPU tests use the local dependency set. The Colab set installed without resolver conflicts and kept PyTorch 2.11.0+cu130. `pip check` reported only the Colab image's unrelated missing optional `jedi` dependency for its preinstalled IPython 7.34.0. See the [Colab runtime FAQ](https://research.google.com/colaboratory/runtime-version-faq.html). The local `requirements.txt` targets Python 3.11/3.12 and retains the tested PyTorch 2.5.1 pin. The default Qwen config uses fp16 and LoRA. Use `configs/tiny.yaml` for a CPU run; it downloads model and dataset artifacts from Hugging Face, so it is not an offline test.
+
+## Actual pilot results
+
+The pilot used Qwen2.5-0.5B-Instruct, UltraFeedback `train_sft` / `train_prefs`, seed 42, max length 512, 128 capped training examples, and 32 held-out validation examples. SFT completed one epoch (16 optimizer steps). DPO beta 0.05, 0.1, and 0.5 each started from the same saved SFT adapter and used the same 128 preference rows. The selection arms used the same SFT start and beta 0.1: 32 highest `score_chosen - score_rejected` margins versus a seeded random 32-row subset. The 128-row beta-0.1 run is the pilot full-candidate-pool arm. The selector did not read validation or test rows. This is a small pilot of the simplified data-selection procedure, not the paper's full method.
+
+All seven checkpoints were evaluated on the same validation examples with greedy generation, batch size 1, and a 64-token generation cap. Each row is one seed and 32 examples; standard deviations are not applicable.
+
+| Checkpoint | Beta | Preference accuracy | Mean implicit reward margin | Mean generated tokens |
+|---|---:|---:|---:|---:|
+| Base | — | 0.5625 | — | 53.88 |
+| SFT | — | 0.5625 | — | 50.69 |
+| DPO, full pilot pool | 0.05 | 0.5625 | 0.0931 | 54.66 |
+| DPO, full pilot pool | 0.10 | 0.5625 | 0.1606 | 54.63 |
+| DPO, full pilot pool | 0.50 | 0.5625 | 0.4474 | 51.56 |
+| DPO, margin-selected 32 | 0.10 | 0.5625 | 0.0970 | 51.00 |
+| DPO, random 32 | 0.10 | 0.5625 | 0.0743 | 48.59 |
+
+Preference accuracy tied across all seven checkpoints on this small validation sample. The mean chosen-minus-rejected log-probability margins were negative while the medians were positive, so the aggregate margin distribution is strongly skewed; this warrants per-example analysis before drawing conclusions. The response-length median was 64 tokens for every checkpoint because the generation cap is 64; lengths are descriptive and do not establish quality. The mean log-probability margin is reported in [`metrics.csv`](results/pilot-128/evaluation/validation/metrics.csv), along with chosen/rejected scores and run settings. The generated responses and per-example length CSVs are stored alongside it. Training losses and resource measurements are under [`results/pilot-128`](results/pilot-128); six LoRA adapter checkpoints are copied locally but ignored by Git.
+
+![Pilot validation comparison](results/pilot-128/plots/validation_comparison.png)
+
+On the T4, SFT took 78.4 seconds (peak allocated 2,014 MiB); DPO over 128 pairs took 141.2–141.9 seconds per beta (peak allocated 2,333 MiB). Each 32-pair selection run took about 51 seconds. The shared seven-checkpoint validation evaluation took 851 seconds by Colab MCP process wall timing; peak memory for that multi-checkpoint pass was not instrumented. These timings are specific to this runtime and pilot configuration.
+
+The full 61,135-row training splits, multiple-seed replications, final-test evaluation, and full-scale selection comparison have not been run. Google Drive authorization timed out, so pilot outputs were copied from ephemeral Colab storage into this local workspace; Drive-backed persistence and recovery remain unverified. Do not treat this pilot as a completed benchmark. `configs/pilot_128.yaml`, the selection manifests/config snapshots, `summary/run_resources.csv`, training logs, predictions, and response-length exports provide the actual run record. Adapter and optimizer checkpoints are excluded from Git by `.gitignore`.
 
 ## Training
 
@@ -69,7 +93,7 @@ The Colab notebook builds this validation comparison when the selection experime
 
 ## Colab
 
-Open [notebooks/colab_run.ipynb](notebooks/colab_run.ipynb). Commit and push local changes before cloning from GitHub. The notebook checks CUDA, preserves Colab’s managed PyTorch, installs the remaining pinned dependencies together from `requirements-colab.txt`, imports the project modules, mounts Drive, and runs a model/tokenizer finite-logit forward smoke check before training. It stores checkpoints/reference caches/logs/results on Drive, starts at 128 train examples and 512 tokens, and offers resume variables. Increase the sample cap only after SFT and DPO smoke runs complete. A real T4 run has not been performed.
+Open [notebooks/colab_run.ipynb](notebooks/colab_run.ipynb). Commit and push local changes before cloning from GitHub. The notebook checks CUDA, preserves Colab’s managed PyTorch, installs dependencies from `requirements-colab.txt`, imports project modules, mounts Drive, and runs a Qwen finite-logit forward smoke check before training. On a T4, the synthetic pipeline smoke completed two SFT and two DPO optimizer steps, created/reloaded checkpoints and finite reference-logprob caches, and confirmed the DPO reference stayed frozen. This does not validate UltraFeedback training, full-run duration, or restart recovery. The notebook stores checkpoints/reference caches/logs/results on Drive, starts at 128 train examples and 512 tokens, and offers resume variables. Increase the sample cap only after the smoke run completes.
 
 Resume from a periodic `checkpoint-N` folder (SFT and DPO checkpoints include adapter, optimizer, scheduler, RNG, run metadata, and batch cursor):
 
@@ -93,7 +117,7 @@ Evaluation defaults to a validation partition made only from training data. Expl
 python -m unittest discover -s tests -v
 ```
 
-The tests cover the DPO equation (including equivalence with the installed TRL sigmoid loss), prompt masking, EOS inclusion, padding exclusion, identical chosen/rejected responses, reference detachment, SFT adapter identity/freezing, cache invalidation, manifest revision/tokenizer validation, checkpoint state/resumption, equal-size/reproducible data selection, split isolation, and aggregation. They do not establish full-dataset training performance or GPU compatibility.
+The tests cover the closed-form DPO equation, prompt masking, EOS inclusion, padding exclusion, identical chosen/rejected responses, reference detachment, SFT adapter identity/freezing, cache invalidation, manifest revision/tokenizer validation, checkpoint state/resumption, equal-size/reproducible data selection, split isolation, aggregation, and plotting. The optional legacy TRL helper comparison is skipped because installed TRL 1.17.1 no longer exposes `DPOTrainer.dpo_loss`; the pilot does not establish multi-seed or full-dataset performance.
 
 Aggregate actual evaluations across seeds (each evaluation run must be placed under a separate seed-specific directory):
 
@@ -105,10 +129,10 @@ The output contains one row per metric/checkpoint/split/beta, with mean, sample 
 
 ## Colab T4 checklist
 
-1. Select a T4 runtime and run the notebook from a fresh session. It verifies Python, the preinstalled CUDA PyTorch build, the GPU name, and CUDA; do not install `requirements.txt` in Colab because its `torch==2.5.1` pin is for local Python 3.11/3.12 only.
+1. Select T4 GPU and use a fresh managed Colab VM. Verify Python 3.13.16 and Colab-managed PyTorch 2.11.0+cu130 (or a newer compatible managed image). If the notebook reports an unsupported runtime, use Runtime → Disconnect and delete runtime and reconnect to a current T4 image. Do not install `requirements.txt` or replace the managed Torch/CUDA packages in Colab.
 2. Verify CUDA and GPU name, then mount Drive and place `training.output_dir`, `dpo.reference_logps_path`, and evaluation outputs on Drive so runtime resets do not discard state.
 3. Start with a short run using a small `max_train_samples` (for example 128) and `max_length: 512`; verify SFT, DPO, checkpoint resume, and evaluation before scaling.
-4. The default 0.5B LoRA workload should be a more suitable starting point for 16GB T4 memory than a larger base model, but memory/runtime have not been validated on Colab. If OOM occurs, reduce sequence length first and keep per-device batch size at 1.
+4. The Qwen 0.5B tokenizer/model load and a short forward pass used about 1.0 GiB allocated VRAM on the tested T4. This does not establish training memory or throughput. If training runs out of memory, reduce sequence length first and keep per-device batch size at 1.
 5. Train SFT once, then run each beta from that same SFT checkpoint. Tune/select on validation; evaluate the selected comparison on `test` only once.
 
 ## Design and limitations

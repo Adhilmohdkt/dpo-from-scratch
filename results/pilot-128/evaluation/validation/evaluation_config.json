@@ -1,0 +1,23 @@
+{
+  "seed": 42,
+  "split": "validation",
+  "max_new_tokens": 64,
+  "do_sample": false,
+  "batch_size": 1,
+  "checkpoints": {
+    "base": "base",
+    "sft": "results/pilot-128/checkpoints/sft",
+    "dpo_beta_0.05": "results/pilot-128/checkpoints/dpo-beta-0.05",
+    "dpo_beta_0.1": "results/pilot-128/checkpoints/dpo-beta-0.1",
+    "dpo_beta_0.5": "results/pilot-128/checkpoints/dpo-beta-0.5",
+    "margin": "results/pilot-128/checkpoints/dpo-margin-n32",
+    "random": "results/pilot-128/checkpoints/dpo-random-n32"
+  },
+  "beta_by_checkpoint": {
+    "dpo_beta_0.1": 0.1,
+    "dpo_beta_0.05": 0.05,
+    "dpo_beta_0.5": 0.5,
+    "margin": 0.1,
+    "random": 0.1
+  }
+}

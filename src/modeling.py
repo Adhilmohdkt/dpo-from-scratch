@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import transformers
 from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
@@ -17,6 +18,12 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _dtype_load_argument(dtype: torch.dtype) -> dict[str, torch.dtype]:
+    """Use the stable model-loading dtype keyword across Transformers 4 and 5."""
+    major = int(transformers.__version__.split(".", 1)[0])
+    return {"dtype" if major >= 5 else "torch_dtype": dtype}
 
 
 def resolve_device(value: str) -> torch.device:
@@ -52,7 +59,7 @@ def load_model(cfg: dict[str, Any], *, adapter: bool, gradient_checkpointing: bo
     if cfg.get("revision"):
         kwargs["revision"] = cfg["revision"]
     if dtype != torch.float32:
-        kwargs["torch_dtype"] = dtype
+        kwargs.update(_dtype_load_argument(dtype))
     model = AutoModelForCausalLM.from_pretrained(cfg["name_or_path"], **kwargs)
     if gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -82,7 +89,7 @@ def load_sft_policy(cfg: dict[str, Any], adapter_path: str, *, trainable: bool, 
     if cfg.get("revision"):
         kwargs["revision"] = cfg["revision"]
     if dtype != torch.float32:
-        kwargs["torch_dtype"] = dtype
+        kwargs.update(_dtype_load_argument(dtype))
     base = AutoModelForCausalLM.from_pretrained(cfg["name_or_path"], **kwargs)
     model = PeftModel.from_pretrained(base, adapter_path, is_trainable=trainable)
     if gradient_checkpointing and trainable:
@@ -115,6 +122,18 @@ def base_model_identity(cfg: dict[str, Any]) -> dict[str, Any]:
         trust_remote_code=cfg.get("trust_remote_code", False),
     )
     commit = getattr(config, "_commit_hash", None)
+    if not commit:
+        # Transformers 5 no longer consistently exposes the resolved commit on
+        # AutoConfig. Query the Hub metadata directly so SFT/DPO still pin the
+        # precise base weights that define the reference policy.
+        from huggingface_hub import model_info
+
+        try:
+            commit = model_info(source, revision=cfg.get("revision")).sha
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not resolve an immutable Hub commit for {source}; refusing an unpinned SFT reference"
+            ) from exc
     if not commit:
         raise RuntimeError(f"Could not resolve an immutable Hub commit for {source}; refusing an unpinned SFT reference")
     return {"source": source, "resolved_commit": commit, "requested_revision": cfg.get("revision")}

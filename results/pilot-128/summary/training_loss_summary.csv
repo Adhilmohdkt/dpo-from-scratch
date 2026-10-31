@@ -1,0 +1,7 @@
+run,optimizer_steps,mean_step_loss,final_step_loss,loss_type
+dpo-beta-0.05,16,0.6217084191739559,0.33663153648376465,DPO pairwise logistic
+dpo-beta-0.1,16,0.5764827188104391,0.17990484833717346,DPO pairwise logistic
+dpo-beta-0.5,16,0.4709271744941361,0.014461376704275608,DPO pairwise logistic
+dpo-margin-n32,4,0.6179776638746262,0.5754371881484985,DPO pairwise logistic
+dpo-random-n32,4,0.625911220908165,0.5258210897445679,DPO pairwise logistic
+sft,16,250.75816679093987,697.0101928710938,response-token-summed SFT CE

@@ -1,0 +1,23 @@
+{
+  "stage": "evaluation",
+  "split": "validation",
+  "examples": 32,
+  "checkpoints": [
+    "base",
+    "sft",
+    "dpo_beta_0.05",
+    "dpo_beta_0.1",
+    "dpo_beta_0.5",
+    "margin",
+    "random"
+  ],
+  "seed": 42,
+  "max_new_tokens": 64,
+  "do_sample": false,
+  "elapsed_seconds": 851.346,
+  "elapsed_measurement": "Colab MCP process wall duration",
+  "gpu": "Tesla T4",
+  "peak_memory_measured": false,
+  "peak_allocated_mib": null,
+  "peak_reserved_mib": null
+}

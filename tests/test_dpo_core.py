@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 import torch
+from transformers import BatchEncoding
 from trl.trainer.dpo_trainer import DPOTrainer
 
 from src.data import _encode_conversation, collate_preferences, split_train_validation
@@ -25,6 +26,14 @@ class LongTemplateTokenizer:
         return prefix if add_generation_prompt else prefix + [10, 11, 12, 13, 14, 15, 16, 17, 99]
 
 
+class BatchEncodingTemplateTokenizer(FixedTemplateTokenizer):
+    """Match Transformers 5's BatchEncoding return from chat-template tokenization."""
+
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+        ids = super().apply_chat_template(messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
+        return BatchEncoding({"input_ids": [ids]})
+
+
 class TestDpoCore(unittest.TestCase):
     def test_dpo_loss_matches_closed_form(self):
         pc = torch.tensor([-2.0, -1.0])
@@ -39,6 +48,8 @@ class TestDpoCore(unittest.TestCase):
         self.assertTrue(torch.allclose(metrics["logits"], expected_logits))
 
     def test_matches_installed_trl_sigmoid_loss(self):
+        if not hasattr(DPOTrainer, "dpo_loss"):
+            self.skipTest("Installed TRL release no longer exposes the legacy DPOTrainer.dpo_loss helper")
         pc = torch.tensor([-2.1, -1.3, -3.0])
         pr = torch.tensor([-3.4, -2.8, -3.2])
         rc = torch.tensor([-2.0, -1.7, -3.3])
@@ -89,6 +100,12 @@ class TestDpoCore(unittest.TestCase):
         tokenizer = FixedTemplateTokenizer()
         messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
         ids, mask = _encode_conversation(tokenizer, messages, max_length=10)
+        self.assertEqual(ids, [1, 2, 3, 4, 5, 9])
+        self.assertEqual(mask, [0, 0, 0, 1, 1, 1])
+
+    def test_transformers5_batch_encoding_chat_template_output(self):
+        messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+        ids, mask = _encode_conversation(BatchEncodingTemplateTokenizer(), messages, max_length=10)
         self.assertEqual(ids, [1, 2, 3, 4, 5, 9])
         self.assertEqual(mask, [0, 0, 0, 1, 1, 1])
 

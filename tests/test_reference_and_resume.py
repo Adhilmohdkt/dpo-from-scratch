@@ -3,6 +3,7 @@ import unittest
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from peft import LoraConfig, get_peft_model
@@ -73,6 +74,13 @@ class TestReferenceAndResume(unittest.TestCase):
             weight.write_bytes(b"weights-v2")
             second = base_model_identity({"name_or_path": str(model_dir)})
             self.assertNotEqual(first, second)
+
+    def test_hub_base_identity_falls_back_to_model_info_commit(self):
+        with patch("src.modeling.AutoConfig.from_pretrained", return_value=SimpleNamespace(_commit_hash=None)):
+            with patch("huggingface_hub.model_info", return_value=SimpleNamespace(sha="commit-resolved")) as info:
+                identity = base_model_identity({"name_or_path": "org/model", "revision": "main"})
+        self.assertEqual(identity["resolved_commit"], "commit-resolved")
+        info.assert_called_once_with("org/model", revision="main")
 
     def test_sft_adapter_is_exact_frozen_reference(self):
         with tempfile.TemporaryDirectory() as tmp:

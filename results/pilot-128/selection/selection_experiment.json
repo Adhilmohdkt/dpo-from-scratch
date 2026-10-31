@@ -1,0 +1,92 @@
+{
+  "dataset": "HuggingFaceH4/ultrafeedback_binarized",
+  "dataset_revision": "main",
+  "split": "train_prefs",
+  "dataset_fingerprint": "b7407175e485ef6b",
+  "seed": 42,
+  "validation_fraction": 0.02,
+  "max_train_samples": 128,
+  "subset_size": 32,
+  "candidate_count": 128,
+  "validation_count": 32,
+  "margin_definition": "score_chosen - score_rejected, from the dataset's external scalar scores; measured before any DPO update",
+  "selection_method": "descending external reward-score margin; ties broken by source row ID",
+  "paper_relationship": "simplified inspired experiment; not a reproduction",
+  "arms": {
+    "margin": "margin_subset.json",
+    "random": "random_subset.json",
+    "full": "full_candidate_row_ids.json"
+  },
+  "training_config": {
+    "seed": 42,
+    "model": {
+      "name_or_path": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "main",
+      "trust_remote_code": false,
+      "torch_dtype": "float16",
+      "use_lora": true,
+      "lora": {
+        "r": 16,
+        "alpha": 32,
+        "dropout": 0.05,
+        "target_modules": [
+          "q_proj",
+          "k_proj",
+          "v_proj",
+          "o_proj",
+          "gate_proj",
+          "up_proj",
+          "down_proj"
+        ]
+      }
+    },
+    "data": {
+      "name": "HuggingFaceH4/ultrafeedback_binarized",
+      "revision": "main",
+      "train_preferences_split": "train_prefs",
+      "eval_preferences_split": "test_prefs",
+      "sft_split": "train_sft",
+      "validation_fraction": 0.02,
+      "max_validation_samples": 32,
+      "max_length": 512,
+      "max_train_samples": 128,
+      "train_row_ids_file": null,
+      "max_eval_samples": 32
+    },
+    "training": {
+      "output_dir": "results/pilot-128/checkpoints/sft",
+      "batch_size": 1,
+      "gradient_accumulation_steps": 8,
+      "learning_rate": 5e-05,
+      "weight_decay": 0.0,
+      "epochs": 1,
+      "logging_steps": 1,
+      "save_steps": 8,
+      "max_grad_norm": 1.0,
+      "num_workers": 0,
+      "device": "cuda",
+      "resume_from_checkpoint": null,
+      "gradient_checkpointing": true
+    },
+    "dpo": {
+      "beta": 0.1,
+      "sft_checkpoint": "results/pilot-128/checkpoints/sft",
+      "output_dir": "results/pilot-128/checkpoints/dpo-beta-0.1",
+      "reference_logps_path": "results/pilot-128/reference_logps.pt"
+    },
+    "evaluation": {
+      "split": "validation",
+      "output_dir": "results/pilot-128/evaluation",
+      "max_new_tokens": 64,
+      "batch_size": 1,
+      "checkpoints": {
+        "base": "base",
+        "sft": "results/pilot-128/checkpoints/sft",
+        "dpo_beta_0.1": "results/pilot-128/checkpoints/dpo-beta-0.1"
+      },
+      "beta_by_checkpoint": {
+        "dpo_beta_0.1": 0.1
+      }
+    }
+  }
+}

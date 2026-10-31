@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import load_config
-from src.data import collate_preferences, load_preference_data, load_preference_test_data
+from src.data import _flat_token_ids, collate_preferences, load_preference_data, load_preference_test_data
 from src.dpo_loss import sequence_logps
 from src.modeling import (load_model, load_sft_manifest, load_sft_policy, load_tokenizer,
                           model_config_for_sft_manifest, resolve_device, validate_sft_tokenizer)
@@ -50,7 +50,7 @@ def _prompt_ids(row, tokenizer):
     else:
         first_answer = next((j for j, m in enumerate(messages) if m["role"] == "assistant"), len(messages))
         prompt_messages = [{"role": m["role"], "content": m["content"]} for m in messages[:first_answer]]
-    return tokenizer.apply_chat_template(prompt_messages, tokenize=True, add_generation_prompt=True)
+    return _flat_token_ids(tokenizer.apply_chat_template(prompt_messages, tokenize=True, add_generation_prompt=True))
 
 
 @torch.no_grad()

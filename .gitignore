@@ -4,6 +4,9 @@ __pycache__/
 checkpoints/
 outputs/
 data/
+results/**/checkpoints/
+results/**/reference_logps.pt
+results/**/hf_cache/
 *.log
 *.pt
 *.safetensors
