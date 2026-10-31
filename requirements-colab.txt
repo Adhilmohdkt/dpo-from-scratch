@@ -1,0 +1,9 @@
+# Colab manages its CUDA-enabled PyTorch build. Do not pin or reinstall torch
+# here: install the remaining project stack against the runtime's preinstalled
+# version (notably Python 3.13 runtimes use a newer PyTorch than local CPU tests).
+transformers==4.46.3
+peft==0.13.2
+datasets==3.1.0
+trl==0.12.2
+accelerate==1.1.1
+PyYAML==6.0.2

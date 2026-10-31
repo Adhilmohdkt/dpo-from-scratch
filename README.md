@@ -16,7 +16,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-The dependency set was installed and checked together in a clean Python 3.12 environment (`pip check` passed): PyTorch 2.5.1, Transformers 4.46.3, PEFT 0.13.2, Datasets 3.1.0, TRL 0.12.2, Accelerate 1.1.1, and PyYAML 6.0.2. For Colab, first install the PyTorch 2.5.1 CUDA 12.4 wheel, then install the pinned requirements and verify `torch.cuda.is_available()` and the selected GPU. The default Qwen config uses fp16 and LoRA. Use `configs/tiny.yaml` for a CPU run; it downloads model and dataset artifacts from Hugging Face, so it is not an offline test.
+The dependency set was installed and checked together in a clean Python 3.12 environment (`pip check` passed): PyTorch 2.5.1, Transformers 4.46.3, PEFT 0.13.2, Datasets 3.1.0, TRL 0.12.2, Accelerate 1.1.1, and PyYAML 6.0.2. For Colab, use `notebooks/colab_run.ipynb` and keep Colab’s preinstalled CUDA-enabled PyTorch. The notebook installs the other pinned packages from `requirements-colab.txt`; that file intentionally omits `torch` so it cannot replace the runtime build. PyTorch 2.5/torchvision 0.20 supports Python only through 3.12, while current Colab runtimes use Python 3.13; the [Colab runtime FAQ](https://research.google.com/colaboratory/runtime-version-faq.html) and [PyTorch/torchvision compatibility matrix](https://github.com/pytorch/vision) are the references for runtime changes. The local `requirements.txt` targets Python 3.11/3.12 and retains the tested PyTorch 2.5.1 pin. The default Qwen config uses fp16 and LoRA. Use `configs/tiny.yaml` for a CPU run; it downloads model and dataset artifacts from Hugging Face, so it is not an offline test.
 
 ## Training
 
@@ -69,7 +69,7 @@ The Colab notebook builds this validation comparison when the selection experime
 
 ## Colab
 
-Open [notebooks/colab_run.ipynb](notebooks/colab_run.ipynb). Commit and push local changes before cloning from GitHub. The notebook checks CUDA, installs the pinned CUDA/Python dependencies, mounts Drive, stores checkpoints/reference caches/logs/results there, starts at 128 train examples and 512 tokens, and offers resume variables. Increase the sample cap only after SFT and DPO smoke runs complete. A real T4 run has not been performed.
+Open [notebooks/colab_run.ipynb](notebooks/colab_run.ipynb). Commit and push local changes before cloning from GitHub. The notebook checks CUDA, preserves Colab’s managed PyTorch, installs the remaining pinned dependencies together from `requirements-colab.txt`, imports the project modules, mounts Drive, and runs a model/tokenizer finite-logit forward smoke check before training. It stores checkpoints/reference caches/logs/results on Drive, starts at 128 train examples and 512 tokens, and offers resume variables. Increase the sample cap only after SFT and DPO smoke runs complete. A real T4 run has not been performed.
 
 Resume from a periodic `checkpoint-N` folder (SFT and DPO checkpoints include adapter, optimizer, scheduler, RNG, run metadata, and batch cursor):
 
@@ -105,7 +105,7 @@ The output contains one row per metric/checkpoint/split/beta, with mean, sample 
 
 ## Colab T4 checklist
 
-1. Select a T4 runtime and inspect Python/CUDA; install the matching PyTorch wheel first, then `requirements.txt`.
+1. Select a T4 runtime and run the notebook from a fresh session. It verifies Python, the preinstalled CUDA PyTorch build, the GPU name, and CUDA; do not install `requirements.txt` in Colab because its `torch==2.5.1` pin is for local Python 3.11/3.12 only.
 2. Verify CUDA and GPU name, then mount Drive and place `training.output_dir`, `dpo.reference_logps_path`, and evaluation outputs on Drive so runtime resets do not discard state.
 3. Start with a short run using a small `max_train_samples` (for example 128) and `max_length: 512`; verify SFT, DPO, checkpoint resume, and evaluation before scaling.
 4. The default 0.5B LoRA workload should be a more suitable starting point for 16GB T4 memory than a larger base model, but memory/runtime have not been validated on Colab. If OOM occurs, reduce sequence length first and keep per-device batch size at 1.

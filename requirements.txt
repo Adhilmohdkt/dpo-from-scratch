@@ -1,5 +1,6 @@
-# Python 3.11 or 3.12. For CUDA, install the matching PyTorch wheel first;
-# this pin describes the tested API/version, not a CUDA wheel index.
+# Local tested stack for Python 3.11 or 3.12. Do not install this file into a
+# Python 3.13 Colab runtime; use requirements-colab.txt and keep Colab's managed
+# CUDA PyTorch build instead.
 torch==2.5.1
 transformers==4.46.3
 peft==0.13.2
