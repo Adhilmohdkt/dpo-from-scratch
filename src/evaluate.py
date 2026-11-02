@@ -12,7 +12,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import load_config
-from src.data import _flat_token_ids, collate_preferences, load_preference_eval_data
+from src.data import (SOURCE_ROW_ID, PreferenceDataset, _flat_token_ids,
+                      collate_preferences, load_preference_eval_data)
 from src.dpo_loss import sequence_logps
 from src.hub import ensure_hub_repo, push_run_snapshot
 from src.modeling import (load_model, load_sft_manifest, load_sft_policy, load_tokenizer,
@@ -230,6 +231,87 @@ def _write_metrics(output: Path, results: list[dict]) -> None:
         os.replace(temporary, output / "metrics.csv")
 
 
+def _select_validation_subset(dataset, identity: dict, size: int | None, seed: int):
+    """Select a stable subset from an already isolated validation partition.
+
+    A SHA-256 keyed ranking avoids dependence on Python/NumPy RNG implementation
+    details. The input dataset must already be the validation slice; this helper
+    never loads or selects from the held-out test range.
+    """
+    if size is None:
+        return dataset, identity, None
+    size = int(size)
+    source_size = len(dataset)
+    if size < 1 or size > source_size:
+        raise ValueError(f"validation_subset_size must be between 1 and {source_size}; got {size}")
+    if identity.get("split") != "test_prefs":
+        raise ValueError("Validation subsampling requires the configured held-out preference split")
+    if SOURCE_ROW_ID not in dataset.rows.column_names:
+        raise ValueError("Validation dataset has no source row IDs for reproducible subsampling")
+
+    source_ids = [int(value) for value in dataset.rows[SOURCE_ROW_ID]]
+    if len(source_ids) != source_size or len(set(source_ids)) != source_size:
+        raise ValueError("Validation source row IDs must be unique and match the loaded validation partition")
+    if size == source_size:
+        selected_positions = list(range(source_size))
+    else:
+        def rank(source_id: int) -> bytes:
+            key = f"{identity['dataset']}|{identity['revision']}|{identity['fingerprint']}|{seed}|{source_id}"
+            return hashlib.sha256(key.encode("utf-8")).digest()
+
+        chosen_ids = set(sorted(source_ids, key=lambda row_id: (rank(row_id), row_id))[:size])
+        selected_positions = [i for i, row_id in enumerate(source_ids) if row_id in chosen_ids]
+
+    selected_rows = dataset.rows.select(selected_positions)
+    selected_ids = [source_ids[i] for i in selected_positions]
+    prompt_ids = list(selected_rows["prompt_id"]) if "prompt_id" in selected_rows.column_names else []
+    prompt_ids_payload = json.dumps(prompt_ids, ensure_ascii=False, separators=(",", ":"), default=str)
+    selected_ids_payload = json.dumps(selected_ids, separators=(",", ":"))
+    manifest = {
+        "dataset": identity["dataset"],
+        "revision": identity["revision"],
+        "split": identity["split"],
+        "source_dataset_fingerprint": identity["fingerprint"],
+        "source_validation_rows": source_size,
+        "source_validation_row_ids_sha256": identity["selected_row_ids_sha256"],
+        "subset_size": size,
+        "subset_seed": int(seed),
+        "selection_method": "sha256-ranked sampling without replacement; retained source-validation order",
+        "selected_indices_in_validation_partition": selected_positions,
+        "selected_source_row_ids": selected_ids,
+        "selected_prompt_ids": prompt_ids,
+        "selected_source_row_ids_sha256": hashlib.sha256(selected_ids_payload.encode("utf-8")).hexdigest(),
+        "selected_prompt_ids_sha256": hashlib.sha256(prompt_ids_payload.encode("utf-8")).hexdigest(),
+        "selected_dataset_fingerprint": getattr(selected_rows, "_fingerprint", None),
+    }
+    manifest_payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    manifest["manifest_sha256"] = hashlib.sha256(manifest_payload.encode("utf-8")).hexdigest()
+
+    subset_identity = dict(identity)
+    subset_identity.update({
+        "source_validation_rows": source_size,
+        "source_validation_row_ids_sha256": identity["selected_row_ids_sha256"],
+        "selected_rows": size,
+        "selected_row_ids_sha256": manifest["selected_source_row_ids_sha256"],
+        "validation_subset_seed": int(seed),
+        "validation_subset_manifest_sha256": manifest["manifest_sha256"],
+    })
+    subset = PreferenceDataset(selected_rows, dataset.tokenizer, dataset.max_length)
+    return subset, subset_identity, manifest
+
+
+def _write_validation_subset_manifest(output: Path, manifest: dict | None) -> None:
+    if manifest is None:
+        return
+    path = output / "validation_subset.json"
+    if path.is_file():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved != manifest:
+            raise ValueError("Existing validation subset manifest differs from the requested subset")
+        return
+    _atomic_json(path, manifest)
+
+
 def evaluate(config_path: str, checkpoints: list[str] | None = None, output_dir: str | None = None, split: str | None = None, betas: list[str] | None = None):
     cfg = load_config(config_path)
     set_seed(int(cfg.get("seed", 42)))
@@ -246,6 +328,13 @@ def evaluate(config_path: str, checkpoints: list[str] | None = None, output_dir:
     if selected_split not in {"validation", "test"}:
         raise ValueError("evaluation split must be 'validation' or 'test'")
     dataset, data_identity = load_preference_eval_data(data_cfg, tokenizer, split=selected_split, return_identity=True)
+    subset_manifest = None
+    subset_size = cfg.get("evaluation", {}).get("validation_subset_size")
+    if subset_size is not None:
+        if selected_split != "validation":
+            raise ValueError("validation_subset_size is supported only for the validation split")
+        subset_seed = int(cfg["evaluation"].get("validation_subset_seed", int(cfg.get("seed", 42)) + int(data_cfg.get("eval_split_seed_offset", 2)) + 1))
+        dataset, data_identity, subset_manifest = _select_validation_subset(dataset, data_identity, int(subset_size), subset_seed)
 
     selected = {}
     if checkpoints:
@@ -270,6 +359,7 @@ def evaluate(config_path: str, checkpoints: list[str] | None = None, output_dir:
     output_root = Path(output_dir or cfg.get("evaluation", {}).get("output_dir", "outputs/evaluation"))
     output = output_root / selected_split
     output.mkdir(parents=True, exist_ok=True)
+    _write_validation_subset_manifest(output, subset_manifest)
     hub_settings = cfg.get("hub", {})
     if hub_settings.get("enabled", False):
         ensure_hub_repo(hub_settings)
@@ -287,6 +377,13 @@ def evaluate(config_path: str, checkpoints: list[str] | None = None, output_dir:
         "final_test_samples": int(data_cfg.get("max_eval_samples", 500)),
         "dataset_identity": data_identity,
     }
+    if subset_manifest is not None:
+        evaluation_config["validation_subset"] = {
+            "size": subset_manifest["subset_size"],
+            "seed": subset_manifest["subset_seed"],
+            "selection_method": "sha256_ranked_without_replacement_v1",
+            "manifest_sha256": subset_manifest["manifest_sha256"],
+        }
     evaluation_config_sha256 = hashlib.sha256(json.dumps(evaluation_config, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
     _atomic_json(output / "evaluation_config.json", evaluation_config)
     state_path = output / "evaluation_state.json"

@@ -10,8 +10,9 @@ from transformers import BatchEncoding
 
 from datasets import Dataset
 
-from src.data import load_preference_eval_data
-from src.evaluate import _prompt_ids, generation_length_summary, preference_accuracy, wilson_interval
+from src.data import PreferenceDataset, load_preference_eval_data
+from src.evaluate import (_prompt_ids, _select_validation_subset,
+                          generation_length_summary, preference_accuracy, wilson_interval)
 
 
 class Transformers5Tokenizer:
@@ -43,10 +44,13 @@ class EvaluationRowsSpy:
         self.accessed.extend(indices)
         if any(self.validation_count <= index < self.validation_count + self.test_count for index in indices):
             raise AssertionError("validation attempted to select a final-test row")
-        return EvaluationRowsSpy(
+        result = EvaluationRowsSpy(
             [self.indices[index] for index in indices], self.source_size,
             self.validation_count, self.test_count,
         )
+        if hasattr(self, "source_row_ids"):
+            result.source_row_ids = [self.source_row_ids[index] for index in indices]
+        return result
 
     def add_column(self, name, values):
         if len(self) == self.source_size:
@@ -58,7 +62,9 @@ class EvaluationRowsSpy:
 
     def __getitem__(self, key):
         if key == "prompt_id":
-            raise AssertionError("validation read prompt IDs from an unselected partition")
+            if len(self) == self.source_size:
+                raise AssertionError("validation read prompt IDs from the full unselected split")
+            return [f"prompt-{index}" for index in self.indices]
         if key == "_source_row_id":
             return self.source_row_ids
         if key in {"chosen", "rejected"}:
@@ -95,6 +101,73 @@ class TestEvaluationMetrics(unittest.TestCase):
         self.assertEqual(rows.accessed, list(range(5)))
         self.assertEqual(identity["revision"], "a" * 40)
         self.assertEqual(identity["fingerprint"], rows._fingerprint)
+
+    def test_200_row_subset_stays_inside_original_500_validation_partition(self):
+        rows = EvaluationRowsSpy(source_size=1200, validation_count=500, test_count=500)
+        cfg = {
+            "name": "unused/test-fixture", "revision": "a" * 40,
+            "eval_preferences_split": "test_prefs", "seed": 42,
+            "validation_eval_samples": 500, "max_eval_samples": 500,
+            "eval_split_seed_offset": 2, "max_length": 32,
+        }
+        with patch("src.data.load_dataset", return_value=rows):
+            validation, identity = load_preference_eval_data(cfg, tokenizer=object(), split="validation", return_identity=True)
+        reduced, reduced_identity, manifest = _select_validation_subset(validation, identity, 200, 45)
+        self.assertEqual(len(reduced), 200)
+        self.assertEqual(rows.accessed, list(range(500)))
+        self.assertTrue(all(0 <= row_id < 500 for row_id in manifest["selected_source_row_ids"]))
+        self.assertEqual(reduced_identity["selected_rows"], 200)
+        self.assertEqual(reduced_identity["source_validation_rows"], 500)
+        self.assertEqual(len(manifest["selected_prompt_ids"]), 200)
+
+    def test_all_six_checkpoints_receive_the_same_200_examples(self):
+        from src.evaluate import evaluate
+
+        rows = Dataset.from_list([
+            {"prompt_id": f"prompt-{i}", "chosen": [], "rejected": [], "_source_row_id": i}
+            for i in range(500)
+        ])
+        original_ids_hash = __import__("hashlib").sha256(
+            __import__("json").dumps(list(range(500)), separators=(",", ":")).encode()
+        ).hexdigest()
+        data_identity = {
+            "dataset": "fixture/data", "revision": "b" * 40, "split": "test_prefs",
+            "fingerprint": "eval-fp", "selected_rows": 500,
+            "selected_row_ids_sha256": original_ids_hash,
+            "validation_rows": None, "validation_row_ids_sha256": None,
+        }
+        labels = ["base", "sft", "dpo_beta_0.1", "dpo_beta_0.5", "dpo_margin", "dpo_random"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "eval.yaml"
+            config = {
+                "seed": 42, "model": {"name_or_path": "fixture/model", "revision": "a" * 40},
+                "training": {"device": "cuda", "output_dir": str(root / "missing-sft")},
+                "data": {"name": "fixture/data", "revision": "b" * 40,
+                         "eval_preferences_split": "test_prefs", "validation_eval_samples": 500,
+                         "max_eval_samples": 500, "eval_split_seed_offset": 2, "max_length": 32},
+                "dpo": {"sft_checkpoint": str(root / "missing-sft")},
+                "evaluation": {"split": "validation", "output_dir": str(root / "eval"),
+                               "max_new_tokens": 256, "batch_size": 1,
+                               "validation_subset_size": 200, "validation_subset_seed": 45,
+                               "checkpoints": {label: "base" for label in labels}, "beta_by_checkpoint": {}},
+            }
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            dataset = PreferenceDataset(rows, tokenizer=object(), max_length=32)
+            seen = []
+
+            def evaluate_one(label, path, cfg, tokenizer, chosen_dataset, *args):
+                seen.append((label, chosen_dataset))
+                return {"checkpoint": label, "preference_accuracy": 0.5}
+
+            with patch("src.evaluate.set_seed"), patch("src.evaluate.resolve_device", return_value=torch.device("cpu")), \
+                 patch("src.evaluate.load_tokenizer", return_value=object()), \
+                 patch("src.evaluate.load_preference_eval_data", return_value=(dataset, data_identity)), \
+                 patch("src.evaluate.evaluate_checkpoint", side_effect=evaluate_one):
+                evaluate(str(config_path))
+        self.assertEqual({label for label, _ in seen}, set(labels))
+        self.assertEqual({id(value) for _, value in seen}, {id(seen[0][1])})
+        self.assertEqual(len(seen[0][1]), 200)
 
     def test_evaluation_resume_skips_completed_checkpoint_and_saves_each_result(self):
         from src.evaluate import evaluate

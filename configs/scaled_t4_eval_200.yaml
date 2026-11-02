@@ -1,0 +1,8 @@
+# Evaluation-only overlay. The source experiment remains in scaled_t4.yaml
+# with its original 500-row validation partition and untouched 500-row test set.
+source_validation_size: 500
+validation_subset_size: 200
+validation_subset_seed: 45
+selection_method: sha256_ranked_without_replacement_v1
+output_dir: results/scaled-t4-512/evaluation-200
+hub_run_prefix: scaled-t4-512-validation-200
