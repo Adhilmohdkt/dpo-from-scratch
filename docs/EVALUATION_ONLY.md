@@ -62,22 +62,13 @@ Expected local output:
 
 The corresponding Hub path is `scaled-t4-512-validation-200/seed-42/evaluation/validation`. Evaluation results and completion markers are uploaded there. Upload failure is fatal; rerunning retries the upload. Training snapshots and the existing 500-example evaluation namespace are not uploaded to or overwritten by this run.
 
-The workflow writes actual run metrics and a completion marker. The recorded comparison above is a smaller validation run, not final-test performance; retain final-test evaluation for a future independent report.
+The workflow writes run metrics and a completion marker. Treat the 200-example validation workflow as a smaller validation comparison, not final-test performance; retain final-test evaluation for a future independent report.
 
-## Recorded completed-run summary
+## Completed-run artifact status
 
-The completed Colab run reported the following values for the six checkpoints. All used the same selected 200 examples, deterministic decoding, and 256-token cap. These values are transcribed from the run summary; raw evaluation CSVs are not checked into this local source checkout.
+A completed Colab evaluation was reported, but its CSV/JSON outputs are not present in this checkout or committed Git history. They could not be restored from the private Hub in this environment. Therefore the run's numeric results are unavailable for independent verification and are intentionally omitted. The intended Hub location is `scaled-t4-512-validation-200/seed-42/evaluation/validation`; restore the original summary and per-checkpoint metrics from that location before publishing numeric claims. Do not reconstruct them from earlier prose or screenshots.
 
-| Checkpoint | Raw preference accuracy | 95% Wilson interval | Mean implicit reward margin | Mean response tokens | Fraction hitting cap |
-|---|---:|---:|---:|---:|---:|
-| Base | 47.25% | 40.45–54.16% | — | 178.04 | 51.0% |
-| SFT | 45.75% | 38.99–52.67% | — | 167.24 | 44.0% |
-| DPO β = 0.1 | 47.75% | 40.94–54.65% | 0.3276 | 195.63 | 57.5% |
-| DPO β = 0.5 | 47.25% | 40.45–54.16% | 0.6804 | 182.22 | 51.0% |
-| Margin-selected DPO | 47.25% | 40.45–54.16% | 0.1971 | 185.35 | 52.5% |
-| Random-selected DPO | 47.25% | 40.45–54.16% | 0.1318 | 180.72 | 52.0% |
-
-The best raw preference accuracy among DPO checkpoints was 47.75%, 0.5 percentage points above Base's 47.25%. These overlapping intervals and one seed do not establish a meaningful improvement. Raw preference accuracy compares policy likelihoods for chosen and rejected responses; the implicit reward margin compares policy-vs-reference likelihood ratios. They are not interchangeable. The implementation does not currently calculate implicit-reward pairwise accuracy. A proposed 500-example audit of that metric was not implemented or run and remains future work. Many generations hit the cap, and length is not a quality measure. This computationally constrained 200-example validation is not equivalent to 500 examples; the final-test partition remains reserved.
+The reproducible earlier pilot metrics remain available under `results/pilot-128/evaluation/validation/metrics.csv`. They are from a different 32-example sample with a 64-token generation cap and must not be represented as 200-example results. The pilot table and its config/provenance links are in the root README. Raw preference likelihood accuracy differs from implicit-reward margin; this evaluator does not calculate implicit-reward pairwise accuracy. A proposed 500-example audit of that metric was not implemented or run and remains future work. The final-test partition remains reserved.
 
 ## Runtime estimate
 
